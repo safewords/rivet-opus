@@ -12,8 +12,11 @@ pub(crate) mod tables;
 use crate::mdct::Mdct;
 use tables::OVERLAP;
 
-/// Gain of the synthesis (inverse) MDCT: the RFC's "scaling by 1/2".
-const SYNTH_SCALE: f32 = 0.5;
+/// Gain of the synthesis (inverse) MDCT relative to the textbook transform
+/// (the RFC describes the output as "scaled by 1/2" in the reference
+/// implementation's own transform convention; measured against the test
+/// vectors, the textbook inverse needs no extra factor).
+const SYNTH_SCALE: f32 = 1.0;
 
 /// The MDCTs of the four block sizes and the window, shared by synthesis
 /// and analysis.

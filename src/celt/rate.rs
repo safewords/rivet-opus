@@ -13,10 +13,10 @@ const ALLOC_STEPS: i32 = 6;
 pub const MAX_FINE_BITS: i32 = 8;
 const FINE_OFFSET: i32 = 21;
 
-/// `ceil(8 * log2(i))`, the conservative cost of coding one of `i` values
-/// (`LOG2_FRAC_TABLE`), for `i <= 24`.
+/// `ceil(8 * log2(i + 1))`: the conservative cost, in 1/8 bits, of coding
+/// one of the `i + 1` intensity-stereo start bands (§4.3.3), for `i <= 23`.
 pub fn log2_frac_table(i: usize) -> i32 {
-    if i <= 1 { 0 } else { super::mode::log2_frac(i as u32, BITRES) }
+    super::mode::log2_frac(i as u32 + 1, BITRES)
 }
 
 /// The allocation of one frame.
@@ -339,7 +339,7 @@ mod tests {
 
     #[test]
     fn log2_frac_table_values() {
-        let expect = [0, 0, 8, 13, 16, 19, 21, 23, 24, 26, 27, 28, 29, 30, 31, 32, 32, 33, 34, 34, 35, 36, 36, 37];
+        let expect = [0, 8, 13, 16, 19, 21, 23, 24, 26, 27, 28, 29, 30, 31, 32, 32, 33, 34, 34, 35, 36, 36, 37, 37];
         for (i, &e) in expect.iter().enumerate() {
             assert_eq!(log2_frac_table(i), e, "{i}");
         }
