@@ -6,6 +6,7 @@ mod celt;
 mod decoder;
 mod error;
 mod mdct;
+mod multistream;
 pub mod packet;
 mod range;
 mod resample;
@@ -14,5 +15,6 @@ mod silk;
 
 pub use decoder::{Decoder, SAMPLE_RATES};
 pub use error::{Error, Result};
+pub use multistream::{MultistreamDecoder, OpusHead, family1_layout};
 pub use packet::{Bandwidth, Mode};
 pub use range::{RangeDecoder, RangeEncoder};

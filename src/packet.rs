@@ -294,6 +294,129 @@ pub fn parse(data: &[u8]) -> Result<Packet<'_>> {
     Ok(Packet { toc, frames, padding })
 }
 
+/// Parses a self-delimited packet (RFC 6716 Appendix B) at the start of
+/// `data`; returns it and the number of bytes it occupies.
+pub fn parse_self_delimited(data: &[u8]) -> Result<(Packet<'_>, usize)> {
+    let Some((&first, rest)) = data.split_first() else {
+        return Err(invalid("empty packet [R1]"));
+    };
+    let toc = Toc::from_byte(first);
+    let mut pos = 1usize;
+    let mut frames = Vec::new();
+    let mut padding = 0;
+    let take = |pos: &mut usize, n: usize| -> Result<&[u8]> {
+        if *pos + n > data.len() {
+            return Err(invalid("self-delimited frame runs past the data"));
+        }
+        let f = &data[*pos..*pos + n];
+        *pos += n;
+        Ok(f)
+    };
+    let _ = rest;
+    match toc.code {
+        0 | 1 => {
+            let (n, used) = frame_length(&data[pos..])?;
+            pos += used;
+            if n > MAX_FRAME_BYTES {
+                return Err(invalid("frame longer than 1275 bytes [R2]"));
+            }
+            frames.push(take(&mut pos, n)?);
+            if toc.code == 1 {
+                frames.push(take(&mut pos, n)?);
+            }
+        }
+        2 => {
+            let (n1, used) = frame_length(&data[pos..])?;
+            pos += used;
+            let (n2, used) = frame_length(&data[pos..])?;
+            pos += used;
+            if n1.max(n2) > MAX_FRAME_BYTES {
+                return Err(invalid("frame longer than 1275 bytes [R2]"));
+            }
+            frames.push(take(&mut pos, n1)?);
+            frames.push(take(&mut pos, n2)?);
+        }
+        _ => {
+            let fc = *data.get(pos).ok_or_else(|| invalid("code 3 packet without a frame count [R6]"))?;
+            pos += 1;
+            let vbr = fc & 0x80 != 0;
+            let m = usize::from(fc & 0x3F);
+            if m == 0 || m * toc.frame_size() > 5760 {
+                return Err(invalid("code 3 frame count [R5]"));
+            }
+            if fc & 0x40 != 0 {
+                loop {
+                    let p = *data.get(pos).ok_or_else(|| invalid("padding length cut short [R6]"))?;
+                    pos += 1;
+                    padding += if p == 255 { 254 } else { usize::from(p) };
+                    if p != 255 {
+                        break;
+                    }
+                }
+            }
+            let mut lens = Vec::with_capacity(m);
+            let count = if vbr { m } else { 1 };
+            for _ in 0..count {
+                let (n, used) = frame_length(&data[pos..])?;
+                pos += used;
+                if n > MAX_FRAME_BYTES {
+                    return Err(invalid("frame longer than 1275 bytes [R2]"));
+                }
+                lens.push(n);
+            }
+            if !vbr {
+                lens = vec![lens[0]; m];
+            }
+            for n in lens {
+                frames.push(take(&mut pos, n)?);
+            }
+            if pos + padding > data.len() {
+                return Err(invalid("padding longer than the packet [R6]"));
+            }
+            pos += padding;
+        }
+    }
+    Ok((Packet { toc, frames, padding }, pos))
+}
+
+/// Rewrites a regular packet in the self-delimited framing of RFC 6716
+/// Appendix B (for every stream of a multistream packet but the last).
+pub fn to_self_delimited(packet: &[u8]) -> Result<Vec<u8>> {
+    let p = parse(packet)?;
+    let toc = p.toc;
+    let mut out = vec![packet[0]];
+    match toc.code {
+        0 | 1 => {
+            push_length(&mut out, p.frames[0].len());
+            for f in &p.frames {
+                out.extend_from_slice(f);
+            }
+        }
+        2 => {
+            push_length(&mut out, p.frames[0].len());
+            push_length(&mut out, p.frames[1].len());
+            out.extend_from_slice(p.frames[0]);
+            out.extend_from_slice(p.frames[1]);
+        }
+        _ => {
+            let fc = packet[1];
+            let vbr = fc & 0x80 != 0;
+            out.push(fc & !0x40);
+            if vbr {
+                for f in &p.frames {
+                    push_length(&mut out, f.len());
+                }
+            } else {
+                push_length(&mut out, p.frames[0].len());
+            }
+            for f in &p.frames {
+                out.extend_from_slice(f);
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// The number of samples per channel at 48 kHz in a packet, without
 /// decoding it.
 pub fn packet_samples(data: &[u8]) -> Result<usize> {
@@ -428,6 +551,22 @@ mod tests {
         assert_eq!(p.frames, vec![&[9][..], &[8, 8][..], &[7][..]]);
         let big = vec![0u8; 1277];
         assert!(parse(&big).is_err(), "R2");
+    }
+
+    #[test]
+    fn self_delimited_round_trip() {
+        let toc = Toc { config: 20, stereo: false, code: 0 };
+        let a = vec![7u8; 300];
+        let b = vec![9u8; 5];
+        for frames in [vec![&a[..]], vec![&a[..], &a[..]], vec![&a[..], &b[..]], vec![&b[..], &a[..], &b[..]], vec![&b[..], &b[..], &b[..]]] {
+            let p = build(toc, &frames, Some(900)).unwrap();
+            let sd = to_self_delimited(&p).unwrap();
+            let mut joined = sd.clone();
+            joined.extend_from_slice(&[1, 2, 3]);
+            let (back, used) = parse_self_delimited(&joined).unwrap();
+            assert_eq!(used, sd.len());
+            assert_eq!(back.frames, frames);
+        }
     }
 
     #[test]
