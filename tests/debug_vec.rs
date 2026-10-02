@@ -152,3 +152,37 @@ fn debug_transfer() {
         eprintln!("f {f}: |H| {mag:.3} phase {ph:.3} delay {:.3} samples coherence {coh:.4} level {:.1} dB", -ph / w, 10.0 * (pr / 1e3).log10());
     }
 }
+
+#[test]
+#[ignore]
+fn debug_per_packet() {
+    let d = PathBuf::from(std::env::var("OPUS_TESTVECTORS").unwrap());
+    let v: usize = std::env::var("VEC").unwrap().parse().unwrap();
+    let b = std::fs::read(d.join(format!("testvector{v:02}.bit"))).unwrap();
+    let r: Vec<f64> = std::fs::read(d.join(format!("testvector{v:02}.dec"))).unwrap().chunks_exact(2).map(|c| f64::from(i16::from_le_bytes([c[0], c[1]])) / 32768.0).collect();
+    let mut p = 0;
+    let mut dec = opus::Decoder::new(48000, 2).unwrap();
+    let mut pos = 0;
+    let mut i = 0;
+    let mut prev_cfg = 255u8;
+    while p + 8 <= b.len() {
+        let len = u32::from_be_bytes(b[p..p + 4].try_into().unwrap()) as usize;
+        p += 8;
+        let data = &b[p..p + len];
+        let pcm = dec.decode(Some(data)).unwrap();
+        p += len;
+        let (mut s, mut e, mut m) = (0.0, 0.0, 0.0f64);
+        for (k, &x) in pcm.iter().enumerate() {
+            let rr = r[pos + k];
+            s += rr * rr;
+            e += (rr - f64::from(x)).powi(2);
+            m = m.max((rr - f64::from(x)).abs());
+        }
+        if m * 32768.0 > 300.0 {
+            eprintln!("packet {i} cfg {} (prev {prev_cfg}) code {} len {len}: snr {:.1} max {:.0} ", data[0] >> 3, data[0] & 3, 10.0 * (s / e).log10(), m * 32768.0);
+        }
+        prev_cfg = data[0] >> 3;
+        pos += pcm.len();
+        i += 1;
+    }
+}

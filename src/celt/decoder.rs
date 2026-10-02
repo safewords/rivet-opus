@@ -235,12 +235,6 @@ impl CeltDecoder {
         };
         let (collapse, seed) = bands::quant_all_bands(ec, &params, &mut x, &mut y, &[], self.rng);
         let anti_collapse_on = anti_collapse_rsv > 0 && ec.bits(1) != 0;
-        if std::env::var_os("OPUS_DEBUG").is_some() {
-            eprintln!(
-                "celt lm {lm} c {c} tr {} intra {intra} spread {spread} tf {:?} dual {} int {} coded {} ac {anti_collapse_on} pf {pf_gain} trim {alloc_trim} boosts {:?}",
-                is_transient, &tf_res[start..end], alloc.dual_stereo, alloc.intensity, alloc.coded_bands, &offsets[start..end]
-            );
-        }
         let left = (len * 8) as i32 - ec.tell();
         energy::code_finalise(
             ec,

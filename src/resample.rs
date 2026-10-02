@@ -2,9 +2,13 @@
 //! Opus API rates (8, 12, 16, 24, 48 kHz).
 //!
 //! RFC 6716 §4.2.9 leaves the resampler non-normative but fixes the delay it
-//! may add (Table 54). This one is a linear-phase windowed-sinc
-//! interpolator whose group delay is exactly that allocation, so SILK output
-//! lines up with the CELT layer as the encoder expects.
+//! may add (Table 54). From the SILK rates to 48 kHz the filters are the
+//! ones fitted to the reference decoder's output (see `resample_fit`); for
+//! every other pair this is a linear-phase windowed-sinc interpolator whose
+//! group delay is exactly the Table 54 allocation, so SILK output lines up
+//! with the CELT layer as the encoder expects.
+
+use crate::resample_fit::{FIT_8K, FIT_12K, FIT_16K};
 
 /// A streaming resampler for one channel.
 pub(crate) struct Resampler {
@@ -19,9 +23,6 @@ pub(crate) struct Resampler {
     first: Vec<isize>,
     /// Input history, oldest first.
     hist: Vec<f32>,
-    /// Input samples consumed into whole periods so far, minus the history
-    /// origin.
-    pending_out: usize,
 }
 
 fn gcd(a: usize, b: usize) -> usize {
@@ -34,12 +35,27 @@ impl Resampler {
         let g = gcd(in_rate, out_rate);
         let phases = out_rate / g;
         let in_step = in_rate / g;
+        if in_rate == out_rate {
+            // A plain copy.
+            return Self { in_rate, out_rate, phases: 1, in_step: 1, taps: vec![vec![1.0]], first: vec![0], hist: vec![0.0; 1] };
+        }
+        let fitted = match (in_rate, out_rate) {
+            (8000, 48000) => Some(FIT_8K),
+            (12000, 48000) => Some(FIT_12K),
+            (16000, 48000) => Some(FIT_16K),
+            _ => None,
+        };
+        if let Some(fit) = fitted {
+            let k = fit[0].len();
+            let taps: Vec<Vec<f32>> = fit.iter().map(|g| g.iter().rev().copied().collect()).collect();
+            let first = vec![-(k as isize - 1); fit.len()];
+            return Self { in_rate, out_rate, phases: fit.len(), in_step: 1, taps, first, hist: vec![0.0; k] };
+        }
         // Delay in input samples; the kernel's half-width equals it so the
         // filter is causal.
         let delay = delay_ms * in_rate as f64 / 1000.0;
         let half = delay;
-        let cf: f64 = std::env::var("OPUS_RS_CUT").ok().and_then(|v| v.parse().ok()).unwrap_or(0.97);
-        let cutoff = 0.5 * (out_rate.min(in_rate) as f64 / in_rate as f64) * cf;
+        let cutoff = 0.5 * (out_rate.min(in_rate) as f64 / in_rate as f64) * 0.97;
         let mut taps = Vec::with_capacity(phases);
         let mut first = Vec::with_capacity(phases);
         for p in 0..phases {
@@ -67,7 +83,7 @@ impl Resampler {
             first.push(k0);
         }
         let reach = first.iter().map(|&f| (-f).max(0) as usize).max().unwrap_or(0) + 1;
-        Self { in_rate, out_rate, phases, in_step, taps, first, hist: vec![0.0; reach], pending_out: 0 }
+        Self { in_rate, out_rate, phases, in_step, taps, first, hist: vec![0.0; reach] }
     }
 
     /// The input rate.
@@ -104,7 +120,6 @@ impl Resampler {
         }
         let keep = base;
         self.hist = buf[buf.len() - keep..].to_vec();
-        self.pending_out = 0;
     }
 
     /// Clears the history (§4.2.9: "re-initialized with silence").

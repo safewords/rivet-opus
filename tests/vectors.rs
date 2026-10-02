@@ -71,8 +71,11 @@ fn compare(reference: &[f32], test: &[f32]) -> (f64, f64) {
     (10.0 * (s / e.max(1e-30)).log10(), m)
 }
 
-/// The vectors whose audio is CELT-only (no SILK resampler in the path).
-const CELT_ONLY: [usize; 4] = [1, 7, 9, 11];
+/// The lowest SNR each vector is allowed (dB): the CELT-only vectors are
+/// float rounding away from the reference; the SILK and hybrid ones carry
+/// the difference of the (non-normative, float versus fixed-point) SILK
+/// synthesis and resampling.
+const FLOOR: [f64; 12] = [100.0, 45.0, 45.0, 42.0, 40.0, 40.0, 95.0, 80.0, 80.0, 55.0, 100.0, 43.0];
 
 #[test]
 fn test_vectors_48k() {
@@ -97,7 +100,30 @@ fn test_vectors_48k() {
         );
         assert_eq!(bad + bad_m + bad_mono, 0, "vector {v}: range coder state differs from the reference (first at packet {first_bad:?})");
         assert_eq!(stereo.len(), reference.len(), "vector {v}: length");
-        let floor = if CELT_ONLY.contains(&v) { 70.0 } else { 15.0 };
+        let floor = FLOOR[v - 1];
         assert!(snr > floor && snr_m > floor, "vector {v}: SNR {snr:.2} / {snr_m:.2} below {floor} dB");
+    }
+}
+
+/// Every vector also decodes at the other rates and channel counts with the
+/// reference's final range on every packet and the right length (the
+/// reference outputs exist only at 48 kHz).
+#[test]
+fn test_vectors_other_rates() {
+    let Some(d) = dir() else {
+        eprintln!("SKIPPED: test vectors not found (set OPUS_TESTVECTORS)");
+        return;
+    };
+    for v in 1..=12 {
+        let packets = read_bit(&d.join(format!("testvector{v:02}.bit")));
+        let n48 = read_pcm(&d.join(format!("testvector{v:02}.dec"))).len() / 2;
+        for rate in [8000u32, 12000, 16000, 24000] {
+            for channels in [1usize, 2] {
+                let (pcm, bad, first) = decode(&packets, rate, channels, false);
+                assert_eq!(bad, 0, "vector {v} at {rate} Hz x{channels}: first mismatch {first:?}");
+                assert_eq!(pcm.len(), n48 * rate as usize / 48000 * channels, "vector {v} at {rate} Hz");
+                assert!(pcm.iter().all(|x| x.is_finite() && x.abs() <= 2.0));
+            }
+        }
     }
 }

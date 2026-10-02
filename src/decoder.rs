@@ -15,8 +15,7 @@ pub const SAMPLE_RATES: [u32; 5] = [8000, 12000, 16000, 24000, 48000];
 
 /// The SILK resampler delay allocations of Table 54, in ms.
 fn silk_delay_ms(fs_khz: usize) -> f64 {
-    let adj: f64 = std::env::var("OPUS_SILK_DELAY_ADJ").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0);
-    adj + match fs_khz {
+    match fs_khz {
         8 => 0.538,
         12 => 0.692,
         _ => 0.706,
@@ -223,11 +222,11 @@ impl Decoder {
             && self.prev_mode.is_some_and(|pm| {
                 (mode == Mode::Celt && pm != Mode::Celt && !self.prev_redundancy) || (mode != Mode::Celt && pm == Mode::Celt)
             });
-        let pcm_transition = if transition {
-            let pm = self.prev_mode.unwrap_or(Mode::Celt);
-            let size = if pm == Mode::Celt { 240 } else { 480 };
-            let t = self.decode_frame(None, pm, self.last_bw, size, self.last_stereo, false);
-            Some(t)
+        // Into CELT, the old mode's concealment comes first; out of CELT it
+        // is only needed when the frame carries no redundancy (decided
+        // below).
+        let mut pcm_transition = if transition && mode == Mode::Celt {
+            Some(self.decode_frame(None, self.prev_mode.unwrap_or(Mode::Silk), self.last_bw, 480, self.last_stereo, false))
         } else {
             None
         };
@@ -277,6 +276,9 @@ impl Decoder {
                     ec.shrink(redundancy_bytes);
                 }
             }
+        }
+        if transition && mode != Mode::Celt && !redundancy {
+            pcm_transition = Some(self.decode_frame(None, Mode::Celt, self.last_bw, 240, self.last_stereo, false));
         }
         let start_band = if mode == Mode::Hybrid { 17 } else { 0 };
         let end_band = bw.celt_end_band();
