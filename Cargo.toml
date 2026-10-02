@@ -1,0 +1,27 @@
+[package]
+name = "rivet-opus"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+license-file = "LICENSE.md"
+readme = "README.md"
+repository = "https://github.com/rivet-transcoder/rivet-opus"
+homepage = "https://github.com/rivet-transcoder/rivet-opus"
+documentation = "https://docs.rs/rivet-opus"
+authors = ["Ely Erin Fox"]
+description = "An Opus encoder and decoder in Rust, written from RFC 6716 as amended by RFC 8251: no C, no system libraries, no build script. SILK, CELT and hybrid modes, every frame size and packet code, PLC and LBRR (FEC) decoding, multistream (RFC 7845 channel mapping families 0 and 1). rivet's Opus codec. Imported as `opus`."
+keywords = ["opus", "audio", "decoder", "encoder", "codec"]
+categories = ["multimedia::audio", "multimedia::encoding"]
+exclude = [".github/", "docs/", "fuzz/", "tools/", "tests/vectors/"]
+
+[lib]
+name = "opus"
+
+[dependencies]
+thiserror = "2"
+
+[features]
+default = []
+
+[profile.test]
+opt-level = 3
