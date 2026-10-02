@@ -277,7 +277,7 @@ impl CeltDecoder {
         self.synthesize(&xy, n, c, start, end, is_transient, silence);
         self.postfilter_and_output(n, lm, pf_pitch, pf_gain, pf_tapset, out, accumulate);
         // Energy history.
-        if cc == 2 && c == 1 {
+        if c == 1 {
             let (a, b) = self.old_band_e.split_at_mut(NB_EBANDS);
             b.copy_from_slice(a);
         }

@@ -36,33 +36,34 @@ fn read_pcm(path: &PathBuf) -> Vec<f32> {
     std::fs::read(path).unwrap().chunks_exact(2).map(|c| f32::from(i16::from_le_bytes([c[0], c[1]])) / 32768.0).collect()
 }
 
-/// Decodes a vector; returns (output, packets whose final range mismatched).
-fn decode(packets: &[Packet], rate: u32, channels: usize) -> (Vec<f32>, usize, usize) {
+/// Decodes a vector; returns (output, packets whose final range mismatched,
+/// first mismatching packet).
+fn decode(packets: &[Packet], rate: u32, channels: usize, no_inversion: bool) -> (Vec<f32>, usize, Option<usize>) {
     let mut dec = opus::Decoder::new(rate, channels).unwrap();
+    dec.set_phase_inversion_disabled(no_inversion);
     let mut out = Vec::new();
     let mut bad = 0;
-    let mut first_bad = usize::MAX;
+    let mut first_bad = None;
     for (i, p) in packets.iter().enumerate() {
         let pcm = if p.data.is_empty() { dec.decode(None).unwrap() } else { dec.decode(Some(&p.data)).unwrap() };
         out.extend_from_slice(&pcm);
         if !p.data.is_empty() && dec.final_range() != p.range {
             bad += 1;
-            first_bad = first_bad.min(i);
+            first_bad.get_or_insert(i);
         }
     }
     (out, bad, first_bad)
 }
 
 /// SNR (dB) of `test` against `reference`, and the largest absolute error
-/// (in 16-bit units).
+/// in 16-bit units. The test output is rounded to 16 bits like the
+/// reference.
 fn compare(reference: &[f32], test: &[f32]) -> (f64, f64) {
     let n = reference.len().min(test.len());
     let (mut s, mut e, mut m) = (0.0f64, 0.0f64, 0.0f64);
     for i in 0..n {
         let r = f64::from(reference[i]);
-        let t = f64::from(test[i]).clamp(-1.0, 32767.0 / 32768.0);
-        // The reference is 16-bit: round the test output the same way.
-        let t = (t * 32768.0).round() / 32768.0;
+        let t = (f64::from(test[i]) * 32768.0).round().clamp(-32768.0, 32767.0) / 32768.0;
         s += r * r;
         e += (r - t) * (r - t);
         m = m.max((r - t).abs() * 32768.0);
@@ -70,25 +71,33 @@ fn compare(reference: &[f32], test: &[f32]) -> (f64, f64) {
     (10.0 * (s / e.max(1e-30)).log10(), m)
 }
 
+/// The vectors whose audio is CELT-only (no SILK resampler in the path).
+const CELT_ONLY: [usize; 4] = [1, 7, 9, 11];
+
 #[test]
 fn test_vectors_48k() {
     let Some(d) = dir() else {
         eprintln!("SKIPPED: test vectors not found (set OPUS_TESTVECTORS)");
         return;
     };
-    let mut report = String::new();
     for v in 1..=12 {
         let packets = read_bit(&d.join(format!("testvector{v:02}.bit")));
         let reference = read_pcm(&d.join(format!("testvector{v:02}.dec")));
         let reference_m = read_pcm(&d.join(format!("testvector{v:02}m.dec")));
-        let (stereo, bad, first_bad) = decode(&packets, 48000, 2);
+        let (stereo, bad, first_bad) = decode(&packets, 48000, 2, false);
         let (snr, maxerr) = compare(&reference, &stereo);
-        let (snr_m, _) = compare(&reference_m, &stereo);
-        let line = format!(
-            "vector {v:02}: {} packets, final range mismatches {bad} (first {first_bad}); stereo SNR {snr:.2} dB (vs m: {snr_m:.2} dB), max error {maxerr:.0}\n",
+        let (stereo_m, bad_m, _) = decode(&packets, 48000, 2, true);
+        let (snr_m, maxerr_m) = compare(&reference_m, &stereo_m);
+        let (mono, bad_mono, _) = decode(&packets, 48000, 1, true);
+        let mono_ref: Vec<f32> = reference_m.chunks_exact(2).map(|c| 0.5 * (c[0] + c[1])).collect();
+        let (snr_mono, maxerr_mono) = compare(&mono_ref, &mono);
+        eprintln!(
+            "vector {v:02}: {} packets, final-range mismatches {bad}/{bad_m}/{bad_mono};              stereo SNR {snr:.2} dB max err {maxerr:.0}; stereo (no inversion) vs m {snr_m:.2} dB max err {maxerr_m:.0};              mono vs m downmix {snr_mono:.2} dB max err {maxerr_mono:.0}",
             packets.len()
         );
-        eprint!("{line}");
-        report.push_str(&line);
+        assert_eq!(bad + bad_m + bad_mono, 0, "vector {v}: range coder state differs from the reference (first at packet {first_bad:?})");
+        assert_eq!(stereo.len(), reference.len(), "vector {v}: length");
+        let floor = if CELT_ONLY.contains(&v) { 70.0 } else { 15.0 };
+        assert!(snr > floor && snr_m > floor, "vector {v}: SNR {snr:.2} / {snr_m:.2} below {floor} dB");
     }
 }
