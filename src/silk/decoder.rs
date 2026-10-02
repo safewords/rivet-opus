@@ -278,8 +278,8 @@ pub struct ChannelState {
     pub last_gain_index: i32,
     pub prev_signal_type: SignalType,
     pub prev_lag: i32,
-    out_hist: Vec<f32>,
-    lpc_hist: [f32; 16],
+    pub(crate) out_hist: Vec<f32>,
+    pub(crate) lpc_hist: [f32; 16],
     // Concealment state.
     plc_a: [f32; 16],
     plc_exc: Vec<f32>,
@@ -394,6 +394,21 @@ impl ChannelState {
     /// §4.2.7.9: LTP and LPC synthesis of one frame from its excitation;
     /// returns the clamped output.
     pub fn synthesize(&mut self, p: &FrameParams, e_q23: &[i32], nb_subfr: usize) -> Vec<f32> {
+        self.synthesize_with(p, nb_subfr, &mut |i, _, _, _| e_q23[i])
+    }
+
+    /// [`Self::synthesize`] with the excitation chosen sample by sample:
+    /// `choose(i, ltp, lpc, gain)` gets the frame position, the LTP
+    /// prediction of the residual, the LPC prediction of the output and the
+    /// subframe gain (Q16 as a float), and returns `e_Q23[i]`. The encoder's
+    /// closed-loop quantizer runs through this, so it tracks the decoder
+    /// exactly.
+    pub fn synthesize_with(
+        &mut self,
+        p: &FrameParams,
+        nb_subfr: usize,
+        choose: &mut dyn FnMut(usize, f32, f32, f32) -> i32,
+    ) -> Vec<f32> {
         let d = self.lpc_order;
         let n = 5 * self.fs_khz;
         let frame_len = n * nb_subfr;
@@ -442,28 +457,41 @@ impl ChannelState {
                 let b: Vec<f32> = p.ltp_taps[s].iter().map(|&v| v as f32 / 128.0).collect();
                 for i in 0..n {
                     let ri = lag + 2 + i;
-                    let mut v = e_q23[j + i] as f32 / 8_388_608.0;
+                    let mut ltp = 0.0f32;
                     for (k, bk) in b.iter().enumerate() {
-                        v += r[ri - lag + 2 - k] * bk;
+                        ltp += r[ri - lag + 2 - k] * bk;
                     }
+                    let li = 16 + j + i;
+                    let mut pred = 0.0f32;
+                    for (k, ak) in a.iter().enumerate() {
+                        pred += lpc[li - k - 1] * ak;
+                    }
+                    let e = choose(j + i, ltp, pred, gain);
+                    let v = e as f32 / 8_388_608.0 + ltp;
                     r[ri] = v;
                     res[i] = v;
+                    let exc = gain / 65536.0 * v;
+                    exc_all[j + i] = exc;
+                    let o = exc + pred;
+                    lpc[li] = o;
+                    out[h + j + i] = o.clamp(-1.0, 1.0);
                 }
             } else {
                 for i in 0..n {
-                    res[i] = e_q23[j + i] as f32 / 8_388_608.0;
+                    let li = 16 + j + i;
+                    let mut pred = 0.0f32;
+                    for (k, ak) in a.iter().enumerate() {
+                        pred += lpc[li - k - 1] * ak;
+                    }
+                    let e = choose(j + i, 0.0, pred, gain);
+                    let v = e as f32 / 8_388_608.0;
+                    res[i] = v;
+                    let exc = gain / 65536.0 * v;
+                    exc_all[j + i] = exc;
+                    let o = exc + pred;
+                    lpc[li] = o;
+                    out[h + j + i] = o.clamp(-1.0, 1.0);
                 }
-            }
-            for i in 0..n {
-                let li = 16 + j + i;
-                let exc = gain / 65536.0 * res[i];
-                exc_all[j + i] = exc;
-                let mut v = exc;
-                for (k, ak) in a.iter().enumerate() {
-                    v += lpc[li - k - 1] * ak;
-                }
-                lpc[li] = v;
-                out[h + j + i] = v.clamp(-1.0, 1.0);
             }
         }
         self.out_hist.copy_from_slice(&out[frame_len..frame_len + h]);

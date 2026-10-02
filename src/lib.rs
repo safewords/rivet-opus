@@ -4,6 +4,7 @@
 
 mod celt;
 mod decoder;
+mod encoder;
 mod error;
 mod mdct;
 mod multistream;
@@ -14,6 +15,7 @@ mod resample_fit;
 mod silk;
 
 pub use decoder::{Decoder, SAMPLE_RATES};
+pub use encoder::{Application, Encoder, EncoderConfig, LOOKAHEAD_48K};
 pub use error::{Error, Result};
 pub use multistream::{MultistreamDecoder, OpusHead, family1_layout};
 pub use packet::{Bandwidth, Mode};
