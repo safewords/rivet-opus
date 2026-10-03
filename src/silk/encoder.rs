@@ -428,6 +428,8 @@ struct Analysis {
     sigma: [f64; 4],
     /// The 16 input samples before the frame, then the frame.
     ext: Vec<f32>,
+    /// RMS of the frame.
+    level: f64,
 }
 
 /// Normalized cross-correlation of `r[n]` and `r[n - lag]` over `range`.
@@ -632,7 +634,8 @@ impl ChannelEncoder {
         h.extend_from_slice(&frame[frame.len().saturating_sub(HIST)..]);
         self.hist = h[h.len() - HIST..].to_vec();
         self.prev_voiced = voiced;
-        Analysis { active, voiced, nlsf_i1: i1, nlsf_i2: i2, lag, contour, periodicity, ltp, sigma, ext }
+        let level = energy.sqrt();
+        Analysis { active, voiced, nlsf_i1: i1, nlsf_i2: i2, lag, contour, periodicity, ltp, sigma, ext, level }
     }
 
     /// One trial encoding of a frame at gain multiplier `mult`, on clones
@@ -692,7 +695,10 @@ impl ChannelEncoder {
             SignalType::Unvoiced
         };
         // Gain targets: the step size tracks the residual level.
-        let targets: Vec<i32> = (0..nb_subfr).map(|k| gain_index(an.sigma[k] * mult * boost[k] * 2_147_483_648.0)).collect();
+        // A step much above the signal itself only adds noise.
+        let cap = if mult > 64.0 { 63 } else { gain_index(an.level.max(1e-5) * 2.0 * 2_147_483_648.0) };
+        let targets: Vec<i32> =
+            (0..nb_subfr).map(|k| gain_index(an.sigma[k] * mult * boost[k] * 2_147_483_648.0).min(cap)).collect();
         let mut sat = [false; 4];
         let gains = code_gains(&targets, st.last_gain_index, cond);
         let ix = FrameIndices {
@@ -811,6 +817,9 @@ pub struct SilkEncoder {
     lbrr: Vec<[Option<LbrrFrame>; 2]>,
     lbrr_w: Vec<[i32; 2]>,
     lbrr_mid_only: Vec<bool>,
+    /// Hybrid frames must not exceed their SILK budget (the CELT layer
+    /// follows); SILK-only frames may grow rather than turn to noise.
+    pub hard_limit: bool,
 }
 
 #[derive(Clone)]
@@ -851,6 +860,7 @@ impl SilkEncoder {
             lbrr: Vec::new(),
             lbrr_w: Vec::new(),
             lbrr_mid_only: Vec::new(),
+            hard_limit: false,
         }
     }
 
@@ -1157,7 +1167,7 @@ impl SilkEncoder {
         target: i32,
     ) -> (ChannelState, RangeEncoder, f64) {
         let ce = &self.ch[ch];
-        let mut lo = -2.0f64;
+        let mut lo = -4.0f64;
         let mut hi = 3.0f64;
         let mut best: Option<(ChannelState, RangeEncoder, f64)> = None;
         for _ in 0..7 {
@@ -1171,11 +1181,22 @@ impl SilkEncoder {
                 lo = mid;
             }
         }
-        best.unwrap_or_else(|| {
-            let mult = hi.exp2();
-            let (st, e2, _, _) = ce.trial(an, frame, nb_subfr, mult, cond, active, enc, 0);
-            (st, e2, mult)
-        })
+        if let Some(b) = best {
+            return b;
+        }
+        // Nothing in the normal range fits (an onset, a tiny budget):
+        // coarsen until it does.
+        let mut last = None;
+        let top = if self.hard_limit { 12 } else { 6 };
+        for k in 4..=top {
+            let mult = f64::from(k).exp2();
+            let (st, e2, bits, _) = ce.trial(an, frame, nb_subfr, mult, cond, active, enc, 0);
+            if bits <= target {
+                return (st, e2, mult);
+            }
+            last = Some((st, e2, mult));
+        }
+        last.expect("at least one trial")
     }
 }
 

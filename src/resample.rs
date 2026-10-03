@@ -39,18 +39,7 @@ impl Resampler {
             // A plain copy.
             return Self { in_rate, out_rate, phases: 1, in_step: 1, taps: vec![vec![1.0]], first: vec![0], hist: vec![0.0; 1] };
         }
-        let fitted = match (in_rate, out_rate) {
-            (8000, 48000) => Some(FIT_8K),
-            (12000, 48000) => Some(FIT_12K),
-            (16000, 48000) => Some(FIT_16K),
-            _ => None,
-        };
-        if let Some(fit) = fitted {
-            let k = fit[0].len();
-            let taps: Vec<Vec<f32>> = fit.iter().map(|g| g.iter().rev().copied().collect()).collect();
-            let first = vec![-(k as isize - 1); fit.len()];
-            return Self { in_rate, out_rate, phases: fit.len(), in_step: 1, taps, first, hist: vec![0.0; k] };
-        }
+
         // Delay in input samples; the kernel's half-width equals it so the
         // filter is causal.
         let delay = delay_ms * in_rate as f64 / 1000.0;
@@ -84,6 +73,26 @@ impl Resampler {
         }
         let reach = first.iter().map(|&f| (-f).max(0) as usize).max().unwrap_or(0) + 1;
         Self { in_rate, out_rate, phases, in_step, taps, first, hist: vec![0.0; reach] }
+    }
+
+    /// The decoder's SILK output resampler: the fitted filters to 48 kHz,
+    /// otherwise the windowed-sinc design with the Table 54 delay.
+    pub fn silk_output(in_rate: usize, out_rate: usize, delay_ms: f64) -> Self {
+        let fitted = match (in_rate, out_rate) {
+            (8000, 48000) => Some(FIT_8K),
+            (12000, 48000) => Some(FIT_12K),
+            (16000, 48000) => Some(FIT_16K),
+            _ => None,
+        };
+        match fitted {
+            Some(fit) => {
+                let k = fit[0].len();
+                let taps: Vec<Vec<f32>> = fit.iter().map(|g| g.iter().rev().copied().collect()).collect();
+                let first = vec![-(k as isize - 1); fit.len()];
+                Self { in_rate, out_rate, phases: fit.len(), in_step: 1, taps, first, hist: vec![0.0; k] }
+            }
+            None => Self::new(in_rate, out_rate, delay_ms),
+        }
     }
 
     /// The input rate.

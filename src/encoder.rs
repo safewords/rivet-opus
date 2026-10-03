@@ -105,6 +105,8 @@ pub struct Encoder {
     /// VBR reservoir in bits: positive when earlier frames used less than
     /// their share.
     reservoir: i64,
+    /// CBR: the fraction of a byte (in bit·48 kHz-sample units) owed.
+    cbr_carry: i64,
 }
 
 fn valid_frame_size(n: usize) -> bool {
@@ -148,6 +150,7 @@ impl Encoder {
             prev_mode: None,
             final_range: 0,
             reservoir: 0,
+            cbr_carry: 0,
         })
     }
 
@@ -207,7 +210,7 @@ impl Encoder {
         match self.cfg.application {
             Application::Voip => {
                 if per_ch < 20_000 || self.max_bw() <= Bandwidth::Wide {
-                    if self.max_bw() <= Bandwidth::Wide || per_ch < 12_000 { Mode::Silk } else { Mode::Hybrid }
+                    Mode::Silk
                 } else if per_ch < 36_000 {
                     Mode::Hybrid
                 } else {
@@ -321,6 +324,8 @@ impl Encoder {
             Mode::Silk | Mode::Hybrid => self.encode_silk_hybrid(&x48, n, bw, mode)?,
         };
         self.prev_mode = Some(mode);
+        let avg = i64::from(self.cfg.bitrate) * n as i64 / 48000;
+        self.reservoir = (self.reservoir + avg - 8 * packet.len() as i64).clamp(-4 * avg, 4 * avg);
         Ok(packet)
     }
 
@@ -329,15 +334,17 @@ impl Encoder {
     fn packet_bytes(&mut self, n: usize, boost: f32) -> usize {
         let bits = i64::from(self.cfg.bitrate) * n as i64 / 48000;
         if !self.cfg.vbr {
-            return ((bits + 4) / 8).max(3) as usize;
+            // Carry the fraction of a byte so the long-term rate is exact.
+            let exact = i64::from(self.cfg.bitrate) * n as i64 + self.cbr_carry;
+            let bytes = (exact / (48000 * 8)).max(3);
+            self.cbr_carry = exact - bytes * 48000 * 8;
+            return bytes as usize;
         }
         let want = (bits as f32 * boost) as i64;
-        // Pull the long-term rate back to the target.
-        let adjusted = want + self.reservoir / 8;
-        let lo = bits / 2;
-        let hi = bits * 2;
-        let use_bits = adjusted.clamp(lo, hi);
-        self.reservoir += bits - use_bits;
+        // Pull the long-term rate back to the target: the reservoir holds
+        // the bits earlier packets left unused (or overspent).
+        let adjusted = want + self.reservoir / 4;
+        let use_bits = adjusted.clamp(bits / 2, bits * 2);
         ((use_bits + 4) / 8).max(3) as usize
     }
 
@@ -364,7 +371,7 @@ impl Encoder {
             frames.push(enc.finish());
         }
         let refs: Vec<&[u8]> = frames.iter().map(|f| f.as_slice()).collect();
-        packet::build(toc, &refs, None)
+        packet::build(toc, &refs, if self.cfg.vbr { None } else { Some(total) })
     }
 
     /// Downsamples to the SILK rate and keeps `SILK_LOOKAHEAD_MS` of
@@ -413,6 +420,7 @@ impl Encoder {
         let result = if mode == Mode::Silk {
             // One Opus frame of up to 60 ms.
             let budget = ((total_bytes - 1).min(packet::MAX_FRAME_BYTES) * 8) as i32;
+            self.silk.hard_limit = false;
             let mut enc = RangeEncoder::new(packet::MAX_FRAME_BYTES);
             self.silk.encode(&mut enc, &silk_in, frame_len_total, fs_khz, n / 48, budget, self.cfg.fec);
             // Size the frame to the bits used: fewer than 17 bits left over
@@ -436,6 +444,7 @@ impl Encoder {
             let sub_len = sub * fs_khz / 48;
             let ahead_len = silk_in.len() / c - frame_len_total;
             let mut frames = Vec::with_capacity(count);
+            self.silk.hard_limit = true;
             let cfg = FrameConfig { start: 17, end: bw.celt_end_band(), bitrate: self.cfg.bitrate as i32 };
             for k in 0..count {
                 let mut enc = RangeEncoder::new(per_frame);
@@ -452,7 +461,7 @@ impl Encoder {
             }
             let toc = Toc { config: Toc::config_for(Mode::Hybrid, bw, sub).expect("hybrid config"), stereo: c == 2, code: 0 };
             let refs: Vec<&[u8]> = frames.iter().map(|f| f.as_slice()).collect();
-            packet::build(toc, &refs, None)
+            packet::build(toc, &refs, if self.cfg.vbr { None } else { Some(total_bytes) })
         };
         self.silk_buf.drain(..frame_len_total * c);
         result
