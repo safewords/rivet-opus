@@ -42,7 +42,7 @@ fn exp_rotation1(x: &mut [f32], len: usize, stride: usize, c: f32, s: f32) {
         x[i + stride] = c * x2 + s * x1;
         x[i] = c * x1 + ms * x2;
     }
-    if len >= 2 * stride + 1 {
+    if len > 2 * stride {
         for i in (0..=len - 2 * stride - 1).rev() {
             let x1 = x[i];
             let x2 = x[i + stride];
@@ -676,10 +676,10 @@ impl<E: Coder> BandCtx<'_, E> {
                 y[1] *= side;
                 let t = x[0];
                 x[0] = t - y[0];
-                y[0] = t + y[0];
+                y[0] += t;
                 let t = x[1];
                 x[1] = t - y[1];
-                y[1] = t + y[1];
+                y[1] += t;
             }
         } else {
             let delta = sctx.delta;

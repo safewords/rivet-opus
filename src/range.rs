@@ -528,6 +528,69 @@ impl RangeEncoder {
     }
 }
 
+/// What the CELT band and allocation code needs from either side of the
+/// range coder: on the encoder each call writes the value it is given and
+/// returns it; on the decoder each call ignores it and returns what it read.
+pub(crate) trait Coder {
+    /// True for the encoder.
+    const ENCODE: bool;
+    fn tell_frac(&self) -> i32;
+    fn bit_logp(&mut self, value: bool, logp: u32) -> bool;
+    fn uint(&mut self, value: u32, ft: u32) -> u32;
+    fn bits(&mut self, value: u32, n: u32) -> u32;
+    /// Decoder only: `decode(ft)`.
+    fn decode_fs(&mut self, ft: u32) -> u32;
+    /// Encoder: encodes `(fl, fh, ft)`; decoder: updates with it.
+    fn code(&mut self, fl: u32, fh: u32, ft: u32);
+}
+
+impl Coder for RangeDecoder<'_> {
+    const ENCODE: bool = false;
+    fn tell_frac(&self) -> i32 {
+        RangeDecoder::tell_frac(self)
+    }
+    fn bit_logp(&mut self, _: bool, logp: u32) -> bool {
+        RangeDecoder::bit_logp(self, logp)
+    }
+    fn uint(&mut self, _: u32, ft: u32) -> u32 {
+        RangeDecoder::uint(self, ft)
+    }
+    fn bits(&mut self, _: u32, n: u32) -> u32 {
+        RangeDecoder::bits(self, n)
+    }
+    fn decode_fs(&mut self, ft: u32) -> u32 {
+        self.decode(ft)
+    }
+    fn code(&mut self, fl: u32, fh: u32, ft: u32) {
+        self.update(fl, fh, ft)
+    }
+}
+
+impl Coder for RangeEncoder {
+    const ENCODE: bool = true;
+    fn tell_frac(&self) -> i32 {
+        RangeEncoder::tell_frac(self)
+    }
+    fn bit_logp(&mut self, value: bool, logp: u32) -> bool {
+        RangeEncoder::bit_logp(self, value, logp);
+        value
+    }
+    fn uint(&mut self, value: u32, ft: u32) -> u32 {
+        RangeEncoder::uint(self, value, ft);
+        value
+    }
+    fn bits(&mut self, value: u32, n: u32) -> u32 {
+        RangeEncoder::bits(self, value, n);
+        value
+    }
+    fn decode_fs(&mut self, _: u32) -> u32 {
+        unreachable!("decode_fs on an encoder")
+    }
+    fn code(&mut self, fl: u32, fh: u32, ft: u32) {
+        self.encode(fl, fh, ft)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -565,7 +628,7 @@ mod tests {
                     let bits = 1 + g.next() % 15;
                     Op::Bin(g.next() % (1 << bits), bits)
                 }
-                2 | 3 => Op::Logp(g.next() % 4 == 0, 1 + g.next() % 15),
+                2 | 3 => Op::Logp(g.next().is_multiple_of(4), 1 + g.next() % 15),
                 4 => Op::Icdf((g.next() % 4) as usize),
                 5 => {
                     let ft = 2 + (g.next() >> (g.next() % 31));
@@ -661,83 +724,5 @@ mod tests {
                 assert_eq!(dec.bit_logp(2), b);
             }
         }
-    }
-}
-
-/// What the CELT band and allocation code needs from either side of the
-/// range coder: on the encoder each call writes the value it is given and
-/// returns it; on the decoder each call ignores it and returns what it read.
-pub(crate) trait Coder {
-    /// True for the encoder.
-    const ENCODE: bool;
-    fn tell(&self) -> i32;
-    fn tell_frac(&self) -> i32;
-    fn bit_logp(&mut self, value: bool, logp: u32) -> bool;
-    fn uint(&mut self, value: u32, ft: u32) -> u32;
-    fn bits(&mut self, value: u32, n: u32) -> u32;
-    fn icdf(&mut self, s: usize, icdf: &[u8], ftb: u32) -> usize;
-    /// Decoder only: `decode(ft)`.
-    fn decode_fs(&mut self, ft: u32) -> u32;
-    /// Encoder: encodes `(fl, fh, ft)`; decoder: updates with it.
-    fn code(&mut self, fl: u32, fh: u32, ft: u32);
-}
-
-impl Coder for RangeDecoder<'_> {
-    const ENCODE: bool = false;
-    fn tell(&self) -> i32 {
-        RangeDecoder::tell(self)
-    }
-    fn tell_frac(&self) -> i32 {
-        RangeDecoder::tell_frac(self)
-    }
-    fn bit_logp(&mut self, _: bool, logp: u32) -> bool {
-        RangeDecoder::bit_logp(self, logp)
-    }
-    fn uint(&mut self, _: u32, ft: u32) -> u32 {
-        RangeDecoder::uint(self, ft)
-    }
-    fn bits(&mut self, _: u32, n: u32) -> u32 {
-        RangeDecoder::bits(self, n)
-    }
-    fn icdf(&mut self, _: usize, icdf: &[u8], ftb: u32) -> usize {
-        RangeDecoder::icdf(self, icdf, ftb)
-    }
-    fn decode_fs(&mut self, ft: u32) -> u32 {
-        self.decode(ft)
-    }
-    fn code(&mut self, fl: u32, fh: u32, ft: u32) {
-        self.update(fl, fh, ft)
-    }
-}
-
-impl Coder for RangeEncoder {
-    const ENCODE: bool = true;
-    fn tell(&self) -> i32 {
-        RangeEncoder::tell(self)
-    }
-    fn tell_frac(&self) -> i32 {
-        RangeEncoder::tell_frac(self)
-    }
-    fn bit_logp(&mut self, value: bool, logp: u32) -> bool {
-        RangeEncoder::bit_logp(self, value, logp);
-        value
-    }
-    fn uint(&mut self, value: u32, ft: u32) -> u32 {
-        RangeEncoder::uint(self, value, ft);
-        value
-    }
-    fn bits(&mut self, value: u32, n: u32) -> u32 {
-        RangeEncoder::bits(self, value, n);
-        value
-    }
-    fn icdf(&mut self, s: usize, icdf: &[u8], ftb: u32) -> usize {
-        RangeEncoder::icdf(self, s, icdf, ftb);
-        s
-    }
-    fn decode_fs(&mut self, _: u32) -> u32 {
-        unreachable!("decode_fs on an encoder")
-    }
-    fn code(&mut self, fl: u32, fh: u32, ft: u32) {
-        self.encode(fl, fh, ft)
     }
 }

@@ -1,6 +1,10 @@
 //! Opus (RFC 6716, as updated by RFC 8251), both ways, in Rust.
 
 #![forbid(unsafe_code)]
+// Signal processing indexes several arrays in step; the index loops read
+// closer to the RFC's formulas than iterator chains would.
+// Shift-and-add expressions are written as the RFC writes them.
+#![allow(clippy::needless_range_loop, clippy::too_many_arguments, clippy::precedence)]
 
 mod celt;
 mod decoder;

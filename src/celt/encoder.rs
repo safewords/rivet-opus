@@ -359,7 +359,7 @@ fn tf_encode(
     let mut budget = total_bits;
     let mut tell = enc.tell();
     let mut logp = if transient { 2 } else { 4 };
-    let tf_select_rsv = lm > 0 && tell + logp + 1 <= budget;
+    let tf_select_rsv = lm > 0 && tell + logp < budget;
     budget -= i32::from(tf_select_rsv);
     let mut curr = 0;
     let mut tf_changed = 0;
@@ -477,5 +477,5 @@ fn use_dual_stereo(x: &[Vec<f32>], lm: usize, mm: usize) -> bool {
     }
     let e = if lm > 1 { 13.0 } else { 5.0 };
     // Mid/side iff L1_ms / (bins + E) < L1_lr / bins.
-    !(l1_ms / (bins as f32 + e) < l1_lr / bins as f32)
+    l1_ms / (bins as f32 + e) >= l1_lr / bins as f32
 }

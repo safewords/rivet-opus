@@ -308,7 +308,7 @@ fn lpc_to_nlsf(a: &[f64]) -> Option<Vec<i32>> {
 
 /// The stage-2 dequantized step for index `i`.
 fn dequant_step(i: i32, qstep: i32) -> i32 {
-    ((((i << 10) - i.signum() * 102) * qstep) >> 16) as i32
+    (((i << 10) - i.signum() * 102) * qstep) >> 16
 }
 
 /// Quantizes normalized LSFs; returns (I1, I2) whose decoded LSFs are
@@ -867,11 +867,6 @@ impl SilkEncoder {
     /// Back to the initial state.
     pub fn reset(&mut self) {
         *self = Self::new(self.channels);
-    }
-
-    /// The internal rate in kHz (0 before the first frame).
-    pub fn fs_khz(&self) -> usize {
-        self.fs_khz
     }
 
     fn prepare(&mut self, fs_khz: usize) {

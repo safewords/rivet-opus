@@ -5,6 +5,8 @@
 //! vectors at one bandwidth it decodes the SILK signal at its internal rate
 //! with this crate, and fits, by least squares, the causal polyphase filter
 //! that best maps it to the reference's 48 kHz output.
+#![allow(clippy::needless_range_loop, clippy::chunks_exact_to_as_chunks)]
+
 use std::path::PathBuf;
 
 fn solve(mut a: Vec<Vec<f64>>, mut b: Vec<f64>) -> Vec<f64> {

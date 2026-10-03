@@ -13,7 +13,6 @@ use crate::resample_fit::{FIT_8K, FIT_12K, FIT_16K};
 /// A streaming resampler for one channel.
 pub(crate) struct Resampler {
     in_rate: usize,
-    out_rate: usize,
     /// Output samples per period of the rate ratio, and input samples.
     phases: usize,
     in_step: usize,
@@ -37,7 +36,7 @@ impl Resampler {
         let in_step = in_rate / g;
         if in_rate == out_rate {
             // A plain copy.
-            return Self { in_rate, out_rate, phases: 1, in_step: 1, taps: vec![vec![1.0]], first: vec![0], hist: vec![0.0; 1] };
+            return Self { in_rate, phases: 1, in_step: 1, taps: vec![vec![1.0]], first: vec![0], hist: vec![0.0; 1] };
         }
 
         // Delay in input samples; the kernel's half-width equals it so the
@@ -72,7 +71,7 @@ impl Resampler {
             first.push(k0);
         }
         let reach = first.iter().map(|&f| (-f).max(0) as usize).max().unwrap_or(0) + 1;
-        Self { in_rate, out_rate, phases, in_step, taps, first, hist: vec![0.0; reach] }
+        Self { in_rate, phases, in_step, taps, first, hist: vec![0.0; reach] }
     }
 
     /// The decoder's SILK output resampler: the fitted filters to 48 kHz,
@@ -89,7 +88,7 @@ impl Resampler {
                 let k = fit[0].len();
                 let taps: Vec<Vec<f32>> = fit.iter().map(|g| g.iter().rev().copied().collect()).collect();
                 let first = vec![-(k as isize - 1); fit.len()];
-                Self { in_rate, out_rate, phases: fit.len(), in_step: 1, taps, first, hist: vec![0.0; k] }
+                Self { in_rate, phases: fit.len(), in_step: 1, taps, first, hist: vec![0.0; k] }
             }
             None => Self::new(in_rate, out_rate, delay_ms),
         }
@@ -98,11 +97,6 @@ impl Resampler {
     /// The input rate.
     pub fn in_rate(&self) -> usize {
         self.in_rate
-    }
-
-    /// The output rate.
-    pub fn out_rate(&self) -> usize {
-        self.out_rate
     }
 
     /// Converts `input` (a whole number of rate periods) and appends the

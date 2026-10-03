@@ -4,6 +4,8 @@
 //! `testvectorNN.dec` and `testvectorNN m.dec`, or put them in
 //! `tests/vectors/`. Without them these tests skip (and say so).
 
+#![allow(clippy::needless_range_loop, clippy::chunks_exact_to_as_chunks)]
+
 use std::path::PathBuf;
 
 fn dir() -> Option<PathBuf> {

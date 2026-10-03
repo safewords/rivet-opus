@@ -11,6 +11,8 @@
 //! in any of them desynchronises the range decoder, which the vectors'
 //! final-range check catches).
 
+#![allow(clippy::excessive_precision)]
+
 /// Band edges in units of 2.5 ms MDCT bins (Table 55): band `i` covers
 /// bins `EBANDS[i] << LM .. EBANDS[i + 1] << LM`.
 pub const EBANDS: [usize; 22] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 14, 16, 20, 24, 28, 34, 40, 48, 60, 78, 100];
@@ -23,9 +25,6 @@ pub const OVERLAP: usize = 120;
 
 /// Samples in one 2.5 ms MDCT.
 pub const SHORT_MDCT: usize = 120;
-
-/// Largest LM (20 ms).
-pub const MAX_LM: usize = 3;
 
 /// Table 57, `ALLOC[q][band]`, in 1/32 bit per MDCT bin.
 pub const ALLOC: [[u8; 21]; 11] = [

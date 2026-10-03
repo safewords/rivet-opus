@@ -556,8 +556,8 @@ mod tests {
     #[test]
     fn self_delimited_round_trip() {
         let toc = Toc { config: 20, stereo: false, code: 0 };
-        let a = vec![7u8; 300];
-        let b = vec![9u8; 5];
+        let a = [7u8; 300];
+        let b = [9u8; 5];
         for frames in [vec![&a[..]], vec![&a[..], &a[..]], vec![&a[..], &b[..]], vec![&b[..], &a[..], &b[..]], vec![&b[..], &b[..], &b[..]]] {
             let p = build(toc, &frames, Some(900)).unwrap();
             let sd = to_self_delimited(&p).unwrap();

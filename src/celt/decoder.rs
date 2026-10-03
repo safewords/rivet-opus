@@ -14,13 +14,6 @@ use crate::range::RangeDecoder;
 /// PLC).
 pub const DECODE_BUFFER: usize = 2048;
 
-/// What a decoded CELT frame tells the Opus layer.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct FrameInfo {
-    /// The post-filter pitch period, if the post-filter is on.
-    pub pitch: Option<u32>,
-}
-
 /// A CELT decoder for one Opus stream (one or two channels).
 pub struct CeltDecoder {
     /// Output channels.
@@ -94,11 +87,6 @@ impl CeltDecoder {
         self.last_pitch = 0;
     }
 
-    /// Output channels.
-    pub fn channels(&self) -> usize {
-        self.channels
-    }
-
     /// Decodes one frame of `n` samples (at 48 kHz) coded with `c` channels
     /// from `ec`, whose frame is `ec.storage()` bytes, coding bands
     /// `start..end`. Writes `n / downsample` interleaved samples per channel
@@ -113,11 +101,11 @@ impl CeltDecoder {
         end: usize,
         out: &mut [f32],
         accumulate: bool,
-    ) -> FrameInfo {
+    ) {
         let len = ec.storage();
         if len <= 1 {
             self.decode_lost(n, out, accumulate);
-            return FrameInfo::default();
+            return;
         }
         let lm = match n {
             120 => 0,
@@ -126,7 +114,6 @@ impl CeltDecoder {
             _ => 3,
         };
         let mm = 1usize << lm;
-        let cc = self.channels;
         if c == 1 {
             for i in 0..NB_EBANDS {
                 self.old_band_e[i] = self.old_band_e[i].max(self.old_band_e[NB_EBANDS + i]);
@@ -168,7 +155,6 @@ impl CeltDecoder {
         } else {
             false
         };
-        let short_blocks = if is_transient { mm } else { 0 };
         let intra = if tell + 3 <= total_bits { ec.bit_logp(3) } else { false };
         energy::unquant_coarse(ec, &mut self.old_band_e, start, end, intra, c, lm);
         let tf_res = tf_decode(ec, start, end, is_transient, lm, total_bits);
@@ -292,7 +278,6 @@ impl CeltDecoder {
         }
         self.rng = ec.range();
         self.loss_count = 0;
-        FrameInfo { pitch: if pf_gain > 0.0 { Some(pf_pitch as u32) } else { None } }
     }
 
     /// Denormalizes the bands and runs the inverse MDCTs, overlap-adding into
@@ -568,7 +553,7 @@ pub(crate) fn tf_decode(
     let mut budget = total_bits;
     let mut tell = ec.tell();
     let mut logp = if transient { 2 } else { 4 };
-    let tf_select_rsv = lm > 0 && tell + logp + 1 <= budget;
+    let tf_select_rsv = lm > 0 && tell + logp < budget;
     budget -= i32::from(tf_select_rsv);
     let mut tf_changed = 0;
     let mut curr = 0;

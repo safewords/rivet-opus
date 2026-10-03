@@ -40,7 +40,7 @@ impl Fft {
         let mut factors = Vec::new();
         let mut m = n;
         for p in [4, 2, 3, 5] {
-            while m % p == 0 {
+            while m.is_multiple_of(p) {
                 factors.push(p);
                 m /= p;
             }
@@ -100,7 +100,7 @@ pub(crate) struct Mdct {
 
 impl Mdct {
     pub fn new(n: usize) -> Self {
-        assert!(n % 4 == 0);
+        assert!(n.is_multiple_of(4));
         let pre = (0..n / 2)
             .map(|i| {
                 let a = -std::f64::consts::PI * i as f64 / n as f64;
@@ -114,11 +114,6 @@ impl Mdct {
             })
             .collect();
         Self { n, fft: Fft::new(n / 2), pre, post }
-    }
-
-    /// The number of coefficients.
-    pub fn len(&self) -> usize {
-        self.n
     }
 
     /// `out[k] = sum_n v[n] cos(pi/N (n + 1/2)(k + 1/2))`.
