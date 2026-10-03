@@ -1,6 +1,6 @@
 # rivet-opus
 
-[![CI](https://github.com/rivet-transcoder/rivet-opus/actions/workflows/ci.yml/badge.svg)](https://github.com/rivet-transcoder/rivet-opus/actions/workflows/ci.yml)
+[![CI](https://github.com/safewords/rivet-opus/actions/workflows/ci.yml/badge.svg)](https://github.com/safewords/rivet-opus/actions/workflows/ci.yml)
 
 An **Opus** encoder and decoder in Rust: no C, no system libraries, no
 build script, nothing to install on a build host. Written from RFC 6716 as
@@ -9,7 +9,7 @@ mappings), not translated from any implementation. The decoder reproduces
 the reference decoder's final range-coder state on every packet of all
 twelve official test vectors (the figures are [below](#how-it-is-checked)).
 
-Written for the **[rivet](https://github.com/rivet-transcoder/rivet)**
+Written for the **[rivet](https://github.com/safewords/rivet)**
 transcoder, where it replaces libopus on both sides: the encoder behind
 `audio=opus`, and the decoder for Opus sources in MP4, Matroska and Ogg.
 
@@ -18,7 +18,7 @@ dependency (`thiserror`), no features, no build script.
 
 ```toml
 [dependencies]
-opus = { package = "rivet-opus", git = "https://github.com/rivet-transcoder/rivet-opus", branch = "develop" }
+opus = { package = "rivet-opus", git = "https://github.com/safewords/rivet-opus", branch = "develop" }
 ```
 
 ## What it decodes
