@@ -12,7 +12,9 @@ fn dir() -> Option<PathBuf> {
     let d = std::env::var_os("OPUS_TESTVECTORS").map(PathBuf::from).unwrap_or_else(|| {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests").join("vectors")
     });
-    d.join("testvector01.bit").exists().then_some(d)
+    let found = d.join("testvector01.bit").exists();
+    assert!(found || std::env::var_os("OPUS_REQUIRE_VECTORS").is_none(), "OPUS_REQUIRE_VECTORS is set but no test vectors are in {}", d.display());
+    found.then_some(d)
 }
 
 struct Packet {

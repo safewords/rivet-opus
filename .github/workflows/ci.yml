@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: tests (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux x86-64,   os: ubuntu-latest }
+          - { name: linux arm64,    os: ubuntu-24.04-arm }
+          - { name: windows x86-64, os: windows-latest }
+          - { name: macos arm64,    os: macos-latest }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Tests
+        run: cargo test --release
+
+  # The official test vectors (RFC 8251 set) are data, not code: the
+  # decoder must reproduce the reference's final range coder state on every
+  # packet and stay within the SNR floors of tests/vectors.rs. They are
+  # fetched here; without them the vector tests skip and say so.
+  vectors:
+    name: RFC 8251 test vectors
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Fetch the test vectors
+        run: |
+          curl -sSfL -o vectors.tar.gz https://opus-codec.org/static/testvectors/opus_testvectors-rfc8251.tar.gz
+          mkdir -p tests/vectors
+          tar xzf vectors.tar.gz -C tests/vectors --strip-components=1
+      - name: Tests
+        run: cargo test --release --test vectors -- --nocapture
+        env:
+          OPUS_REQUIRE_VECTORS: "1"
+
+  msrv:
+    name: MSRV (1.99)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.99
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release
+
+  lint:
+    name: clippy and rustdoc
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo doc --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings

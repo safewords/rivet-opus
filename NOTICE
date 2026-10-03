@@ -1,0 +1,43 @@
+rivet-opus — an Opus encoder and decoder
+Copyright 2026 Ely Erin Fox
+
+This product is licensed under the Open Encoding Attribution License,
+Version 1.0 (see LICENSE.md). It is source-available, not open source: the
+attribution duty in §5 applies to commercial use; §4 requires this NOTICE to
+be carried forward with any distribution.
+
+------------------------------------------------------------------------------
+Provenance
+------------------------------------------------------------------------------
+
+The encoder and decoder are original implementations written from the prose
+and tables of RFC 6716 (Definition of the Opus Audio Codec) as updated by
+RFC 8251, and from RFC 7845 (Ogg Encapsulation for Opus) for the
+identification header and channel mappings. The reference implementation
+attached to RFC 6716 as source code was not read, copied or translated, nor
+was libopus, FFmpeg's Opus code or any other implementation. The SILK tables
+were extracted from the RFC text by a script; the CELT constants the RFC's
+prose names but does not list are written from the author's knowledge of the
+specification and are verified by the official test vectors (see
+docs/PROVENANCE.md).
+
+The official Opus test vectors (opus_testvectors-rfc8251, published by the
+Opus project and the IETF) are used as data only, downloaded at test time;
+they are not part of this package. The SILK-to-48 kHz resampling filters in
+src/resample_fit.rs were fitted by least squares to three of those vectors'
+reference outputs (a black-box measurement of a non-normative component).
+
+------------------------------------------------------------------------------
+Patents
+------------------------------------------------------------------------------
+
+Opus is covered by patents whose holders have made royalty-free licensing
+commitments to the IETF (see the IPR disclosures for RFC 6716). This licence
+grants no rights under any patent, and the authors make no claim about
+whether a licence is needed for any use.
+
+------------------------------------------------------------------------------
+Third-party components
+------------------------------------------------------------------------------
+
+thiserror (https://crates.io/crates/thiserror) — MIT OR Apache-2.0
