@@ -13,19 +13,21 @@ Provenance
 The encoder and decoder are original implementations written from the prose
 and tables of RFC 6716 (Definition of the Opus Audio Codec) as updated by
 RFC 8251, and from RFC 7845 (Ogg Encapsulation for Opus) for the
-identification header and channel mappings. The reference implementation
-attached to RFC 6716 as source code was not read, copied or translated, nor
-was libopus, FFmpeg's Opus code or any other implementation. The SILK tables
-were extracted from the RFC text by a script; the CELT constants the RFC's
-prose names but does not list are written from the author's knowledge of the
-specification and are verified by the official test vectors (see
-docs/PROVENANCE.md).
+identification header and channel mappings. libopus, FFmpeg and other
+implementations were not read, copied or translated. Where RFC 6716 makes
+the reference code attached to it (Appendix A) normative, it was used as
+specification only: the CELT layer's normative behaviour was described in
+prose by one author (docs/CELT_SPEC.md) and implemented from that
+description by another who did not read the code, and the opus_compare
+conformance metric used by the tests was re-implemented from a description.
+Constant tables were extracted from the RFC text by scripts or derived from
+their definitions (see docs/PROVENANCE.md). The SILK output resampler is an
+original least-squares design; no filter or table was fitted to any
+decoder's output.
 
 The official Opus test vectors (opus_testvectors-rfc8251, published by the
 Opus project and the IETF) are used as data only, downloaded at test time;
-they are not part of this package. The SILK-to-48 kHz resampling filters in
-src/resample_fit.rs were fitted by least squares to three of those vectors'
-reference outputs (a black-box measurement of a non-normative component).
+they are not part of this package.
 
 ------------------------------------------------------------------------------
 Patents

@@ -30,7 +30,8 @@ jobs:
 
   # The official test vectors (RFC 8251 set) are data, not code: the
   # decoder must reproduce the reference's final range coder state on every
-  # packet and stay within the SNR floors of tests/vectors.rs. They are
+  # packet and pass the RFC 6716 §6 opus_compare criterion at every rate
+  # (tests/vectors.rs). They are
   # fetched here; without them the vector tests skip and say so.
   vectors:
     name: RFC 8251 test vectors

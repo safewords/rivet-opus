@@ -70,35 +70,37 @@ allows). Opus Custom is not implemented.
 ## How it is checked
 
 **The official test vectors** (opus_testvectors-rfc8251, used as data;
-`tests/vectors.rs`, run by CI). RFC 6716 §6 defines compliance through
-`opus_compare`, a quality metric given only as source code, so it is not
-used here; instead each vector is reported by its **final range-coder
-state** (which a compliant decoder must reproduce exactly) and by **SNR and
-largest error** against the reference output. 48 kHz:
+`tests/vectors.rs`, run by CI), checked by RFC 6716 §6's own conformance
+criterion: on every one of the 12 vectors, at 8, 12, 16, 24 and 48 kHz, mono
+and stereo, against both RFC 8251 reference sets, the decoder reproduces the
+reference's **final range-coder state on every packet** and passes the
+**`opus_compare` quality metric** (re-implemented in `tests/opus_compare/`
+from its specification in RFC 6716 Appendix A). All 240 comparisons pass;
+the lowest quality is 37.9 (SILK NB at 48 kHz; the threshold is 0, and 100
+means identical output). The CELT-only vectors are float rounding away from
+the reference (99.9–106 dB SNR, quality 98–99.9 at 48 kHz). The full tables,
+waveform SNRs and the resampler's measured response are in
+[docs/VALIDATION.md](docs/VALIDATION.md).
 
-| vector | content | final range | stereo SNR | max err | no-inversion stereo vs `m` | mono vs `m` downmix |
-|---|---|---|---|---|---|---|
-| 01 | CELT stereo | 2147/2147 | 106.30 dB | 1 | 106.36 dB | 76.83 dB |
-| 02 | SILK NB | 1185/1185 | 48.22 dB | 31 | 48.22 dB | 48.54 dB |
-| 03 | SILK MB | 998/998 | 47.39 dB | 43 | 47.39 dB | 47.99 dB |
-| 04 | SILK WB | 1265/1265 | 44.18 dB | 66 | 44.18 dB | 44.91 dB |
-| 05 | hybrid SWB | 2037/2037 | 43.13 dB | 54 | 43.13 dB | 43.65 dB |
-| 06 | hybrid FB | 1876/1876 | 42.49 dB | 72 | 42.49 dB | 42.87 dB |
-| 07 | CELT, all sizes and bandwidths, mono/stereo | 4186/4186 | 99.82 dB | 1 | 99.66 dB | 67.42 dB |
-| 08 | mixed SILK/CELT | 1247/1247 | 84.15 dB | 2 | 84.15 dB | 65.24 dB |
-| 09 | mixed SILK/CELT | 1337/1337 | 83.96 dB | 2 | 83.96 dB | 66.63 dB |
-| 10 | hybrid/CELT switching | 1912/1912 | 58.94 dB | 67 | 58.94 dB | 62.23 dB |
-| 11 | CELT stereo, all packet codes | 553/553 | 106.17 dB | 1 | 106.22 dB | 79.79 dB |
-| 12 | SILK bandwidth switching | 1332/1332 | 45.56 dB | 45 | 45.56 dB | 45.56 dB |
+| vector | content | final range | Q at 48 kHz (stereo) | lowest Q, any rate/channels |
+|---|---|---|---|---|
+| 01 | CELT stereo | 2147/2147 | 99.9 | 91.4 |
+| 02 | SILK NB | 1185/1185 | 38.2 | 37.9 |
+| 03 | SILK MB | 998/998 | 60.5 | 60.5 |
+| 04 | SILK WB | 1265/1265 | 73.9 | 73.9 |
+| 05 | hybrid SWB | 2037/2037 | 55.9 | 43.0 |
+| 06 | hybrid FB | 1876/1876 | 66.2 | 53.5 |
+| 07 | CELT, all sizes and bandwidths | 4186/4186 | 99.9 | 76.0 |
+| 08 | mixed SILK/CELT | 1247/1247 | 94.8 | 70.0 |
+| 09 | mixed SILK/CELT | 1337/1337 | 87.5 | 75.5 |
+| 10 | hybrid/CELT switching | 1912/1912 | 87.7 | 86.2 |
+| 11 | CELT stereo, all packet codes | 553/553 | 99.8 | 91.0 |
+| 12 | SILK bandwidth switching | 1332/1332 | 43.8 | 43.3 |
 
-Max error is in 16-bit units. The CELT vectors differ from the reference by
-float rounding. The SILK and hybrid ones carry the difference between this
-float synthesis and the reference's fixed-point one and its resampler: the
-SILK-to-48 kHz resamplers are least-squares fits to the reference's output on
-vectors 02–04 (the RFC leaves the resampler non-normative), so vectors 02–04
-are in-sample for that fit and 05, 06, 10 and 12 are not. The vectors also
-decode at 8, 12, 16 and 24 kHz, mono and stereo, with the reference's final
-range on every packet (no reference PCM exists at those rates).
+The SILK resampler is this crate's own design (a delay-constrained
+least-squares FIR with exactly the RFC's Table 54 delay; RFC 6716 §4.2.9
+leaves the resampler to the decoder), so SILK and hybrid output differs from
+the reference in phase and fine detail while meeting the criterion.
 
 **Round trips** (`tests/roundtrip.rs`): this encoder, this decoder, 2 s of
 synthetic music (harmonic tones with vibrato) or speech (a glottal pulse
@@ -136,10 +138,15 @@ filter stability; packet rules [R1]–[R7] and self-delimited framing.
 
 ## Provenance and licensing
 
-Written from the RFCs' text; **no Opus implementation's source was read** —
-not the reference code attached to RFC 6716, libopus, FFmpeg's or any other.
-[docs/PROVENANCE.md](docs/PROVENANCE.md) records every source and every
-table.
+Written from the RFCs' text. libopus, FFmpeg and other implementations were
+not read. Where RFC 6716 makes its attached reference code (Appendix A) the
+normative definition, that code was used **as specification only**: one
+author described the CELT layer's normative behaviour in prose
+([docs/CELT_SPEC.md](docs/CELT_SPEC.md)) and another, who never saw that
+code, implemented it from the description; the conformance metric was
+likewise re-implemented from its description. No filter or table is fitted
+to any decoder's output. [docs/PROVENANCE.md](docs/PROVENANCE.md) records
+every source, every table and how each was obtained.
 
 **Patents.** Opus is covered by patents whose holders have made royalty-free
 licensing commitments to the IETF. Nothing here is a licence to any patent.
