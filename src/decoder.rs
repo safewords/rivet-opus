@@ -178,7 +178,7 @@ impl Decoder {
         let in_rate = fs_khz * 1000;
         if self.resamplers.first().is_none_or(|r| r.in_rate() != in_rate) {
             self.resamplers =
-                (0..self.channels).map(|_| Resampler::silk_output(in_rate, self.fs as usize, silk_delay_ms(fs_khz))).collect();
+                (0..self.channels).map(|_| Resampler::new(in_rate, self.fs as usize, silk_delay_ms(fs_khz))).collect();
         }
         let cc = self.channels;
         for (c, ch) in chans.iter().enumerate() {

@@ -8,6 +8,8 @@
 
 use std::path::PathBuf;
 
+mod opus_compare;
+
 fn dir() -> Option<PathBuf> {
     let d = std::env::var_os("OPUS_TESTVECTORS").map(PathBuf::from).unwrap_or_else(|| {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests").join("vectors")
@@ -75,11 +77,13 @@ fn compare(reference: &[f32], test: &[f32]) -> (f64, f64) {
     (10.0 * (s / e.max(1e-30)).log10(), m)
 }
 
-/// The lowest SNR each vector is allowed (dB): the CELT-only vectors are
-/// float rounding away from the reference; the SILK and hybrid ones carry
-/// the difference of the (non-normative, float versus fixed-point) SILK
-/// synthesis and resampling.
-const FLOOR: [f64; 12] = [100.0, 45.0, 45.0, 42.0, 40.0, 40.0, 95.0, 80.0, 80.0, 55.0, 100.0, 43.0];
+/// The lowest SNR allowed for the CELT-only vectors (dB), which are float
+/// rounding away from the reference. Vectors with SILK content carry the
+/// difference of the non-normative SILK synthesis and resampler (which
+/// RFC 6716 §4.2.9 lets a decoder choose freely): their waveform SNR is
+/// reported but not a criterion; the RFC's criterion,
+/// [`test_vectors_conformance`], applies to them.
+const CELT_FLOOR: [Option<f64>; 12] = [Some(100.0), None, None, None, None, None, Some(95.0), None, None, None, Some(100.0), None];
 
 #[test]
 fn test_vectors_48k() {
@@ -99,13 +103,14 @@ fn test_vectors_48k() {
         let mono_ref: Vec<f32> = reference_m.chunks_exact(2).map(|c| 0.5 * (c[0] + c[1])).collect();
         let (snr_mono, maxerr_mono) = compare(&mono_ref, &mono);
         eprintln!(
-            "vector {v:02}: {} packets, final-range mismatches {bad}/{bad_m}/{bad_mono};              stereo SNR {snr:.2} dB max err {maxerr:.0}; stereo (no inversion) vs m {snr_m:.2} dB max err {maxerr_m:.0};              mono vs m downmix {snr_mono:.2} dB max err {maxerr_mono:.0}",
+            "vector {v:02}: {} packets, final-range mismatches {bad}/{bad_m}/{bad_mono}; stereo SNR {snr:.2} dB max err {maxerr:.0}; stereo (no inversion) vs m {snr_m:.2} dB max err {maxerr_m:.0}; mono vs m downmix {snr_mono:.2} dB max err {maxerr_mono:.0}",
             packets.len()
         );
         assert_eq!(bad + bad_m + bad_mono, 0, "vector {v}: range coder state differs from the reference (first at packet {first_bad:?})");
         assert_eq!(stereo.len(), reference.len(), "vector {v}: length");
-        let floor = FLOOR[v - 1];
-        assert!(snr > floor && snr_m > floor, "vector {v}: SNR {snr:.2} / {snr_m:.2} below {floor} dB");
+        if let Some(floor) = CELT_FLOOR[v - 1] {
+            assert!(snr > floor && snr_m > floor, "vector {v}: SNR {snr:.2} / {snr_m:.2} below {floor} dB");
+        }
     }
 }
 
@@ -130,4 +135,65 @@ fn test_vectors_other_rates() {
             }
         }
     }
+}
+
+/// The lowest opus_compare quality accepted by this crate's own tests: a
+/// regression guard well above the RFC's threshold of 0.
+const Q_GUARD: f64 = 30.0;
+
+/// The conformance criterion of RFC 6716 §6, with the test vectors and
+/// two reference sets of RFC 8251 §11: for every vector, every output rate
+/// (8, 12, 16, 24, 48 kHz) and both channel counts, the decoder's final
+/// range must match on every packet and its output must reach opus_compare
+/// quality Q >= 0 against the reference output. RFC 8251 accepts either
+/// set; the normal set (`.dec`) is decoded with phase inversion, the `m`
+/// set (`m.dec`) without, and both are required here. Every Q must also
+/// clear [`Q_GUARD`].
+#[test]
+fn test_vectors_conformance() {
+    let Some(d) = dir() else {
+        eprintln!("SKIPPED: test vectors not found (set OPUS_TESTVECTORS)");
+        return;
+    };
+    let rates = [8000u32, 12000, 16000, 24000, 48000];
+    let results: Vec<(Vec<String>, Vec<String>)> = std::thread::scope(|s| {
+        let handles: Vec<_> = (1..=12usize)
+            .map(|v| {
+                let d = d.clone();
+                s.spawn(move || {
+                    let packets = read_bit(&d.join(format!("testvector{v:02}.bit")));
+                    let mut lines = Vec::new();
+                    let mut failures = Vec::new();
+                    for (set, file, no_inv) in [("normal", format!("testvector{v:02}.dec"), false), ("m", format!("testvector{v:02}m.dec"), true)] {
+                        let reference: Vec<f32> = read_pcm(&d.join(&file)).iter().map(|x| x * 32768.0).collect();
+                        for channels in [1usize, 2] {
+                            let spec = opus_compare::reference_spectrum(&reference, channels);
+                            let mut qs = Vec::new();
+                            for rate in rates {
+                                let (pcm, bad, first) = decode(&packets, rate, channels, no_inv);
+                                assert_eq!(bad, 0, "vector {v} at {rate} Hz x{channels}: final range differs (first at packet {first:?})");
+                                assert_eq!(pcm.len() / channels * (48000 / rate) as usize, reference.len() / 2, "vector {v} at {rate} Hz: length");
+                                let q = opus_compare::quality(&spec, &opus_compare::to_pcm16_units(&pcm), rate, channels).expect("length");
+                                if q < Q_GUARD {
+                                    failures.push(format!("vector {v:02} set {set} {channels} ch {rate} Hz: Q = {q:.1}"));
+                                }
+                                qs.push(format!("{q:>6.1}"));
+                            }
+                            lines.push(format!("vector {v:02} {set:>6} {channels} ch  Q at 8/12/16/24/48 kHz: {}", qs.join(" ")));
+                        }
+                    }
+                    (lines, failures)
+                })
+            })
+            .collect();
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+    let mut failures = Vec::new();
+    for (lines, f) in results {
+        for l in lines {
+            eprintln!("{l}");
+        }
+        failures.extend(f);
+    }
+    assert!(failures.is_empty(), "opus_compare quality below {Q_GUARD}:\n{}", failures.join("\n"));
 }

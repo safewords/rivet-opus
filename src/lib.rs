@@ -46,7 +46,6 @@ mod multistream;
 pub mod packet;
 mod range;
 mod resample;
-mod resample_fit;
 mod silk;
 
 pub use decoder::{Decoder, SAMPLE_RATES};
