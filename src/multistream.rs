@@ -3,8 +3,9 @@
 //! decoder that splits a multistream packet into its streams.
 
 use crate::decoder::Decoder;
+use crate::encoder::{Encoder, EncoderConfig};
 use crate::error::{Error, Result};
-use crate::packet;
+use crate::packet::{self, Bandwidth};
 
 /// The contents of an `OpusHead` identification header (RFC 7845 §5.1).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -270,6 +271,104 @@ impl MultistreamDecoder {
     }
 }
 
+/// An encoder for 1 to 8 channels: one [`Encoder`] per stream of the
+/// family 0 (mono, stereo) or family 1 (surround, Vorbis order) layout of
+/// [`family1_layout`], producing multistream packets (RFC 7845 §5.1.1:
+/// every stream but the last self-delimited, RFC 6716 Appendix B).
+pub struct MultistreamEncoder {
+    encoders: Vec<Encoder>,
+    coupled: usize,
+    mapping: Vec<u8>,
+    head: OpusHead,
+}
+
+impl MultistreamEncoder {
+    /// An encoder for `cfg.channels` (1–8) input channels in Vorbis order;
+    /// `cfg.bitrate` is the total for all streams.
+    pub fn new(cfg: EncoderConfig) -> Result<Self> {
+        let ch = u8::try_from(cfg.channels).map_err(|_| Error::Config("too many channels".into()))?;
+        let (streams, coupled, mapping) =
+            family1_layout(ch).ok_or_else(|| Error::Config(format!("{ch} channels: families 0 and 1 cover 1 to 8")))?;
+        // Share the rate: a coupled stream counts 1.5, a mono one 1, the
+        // LFE (the last channel of 5.1 and 7.1) 0.25.
+        let lfe = if ch == 6 || ch == 8 { Some(usize::from(mapping[usize::from(ch) - 1]) - usize::from(coupled)) } else { None };
+        let weight = |s: usize| -> f64 {
+            if s < usize::from(coupled) {
+                1.5
+            } else if Some(s) == lfe {
+                0.25
+            } else {
+                1.0
+            }
+        };
+        let total: f64 = (0..usize::from(streams)).map(weight).sum();
+        let mut encoders = Vec::with_capacity(usize::from(streams));
+        for s in 0..usize::from(streams) {
+            let channels = if s < usize::from(coupled) { 2 } else { 1 };
+            let bitrate = ((f64::from(cfg.bitrate) * weight(s) / total) as u32).clamp(6000, 510_000);
+            let mut c = EncoderConfig { channels, bitrate, ..cfg };
+            if Some(s) == lfe {
+                c.max_bandwidth = Some(Bandwidth::Narrow);
+                c.mode = Some(crate::packet::Mode::Celt);
+            }
+            encoders.push(Encoder::new(c)?);
+        }
+        let pre_skip = encoders[0].lookahead() as u16;
+        let mut head = OpusHead::new(ch, pre_skip, cfg.sample_rate)?;
+        head.pre_skip = pre_skip;
+        Ok(Self { encoders, coupled: usize::from(coupled), mapping: mapping.to_vec(), head })
+    }
+
+    /// The identification header describing the stream.
+    pub fn head(&self) -> &OpusHead {
+        &self.head
+    }
+
+    /// Samples at 48 kHz of encoder delay (the head's pre-skip).
+    pub fn lookahead(&self) -> usize {
+        self.encoders[0].lookahead()
+    }
+
+    /// Input samples per channel that make one packet.
+    pub fn frame_samples(&self) -> usize {
+        self.encoders[0].frame_samples()
+    }
+
+    /// The XOR of the streams' final ranges.
+    pub fn final_range(&self) -> u32 {
+        self.encoders.iter().fold(0, |a, e| a ^ e.final_range())
+    }
+
+    /// Encodes one packet from interleaved input in Vorbis channel order.
+    pub fn encode(&mut self, pcm: &[f32]) -> Result<Vec<u8>> {
+        let c = self.mapping.len();
+        let n = self.frame_samples();
+        if pcm.len() != n * c {
+            return Err(Error::BadArgument(format!("{} samples given, a packet takes {}", pcm.len(), n * c)));
+        }
+        let mut inputs: Vec<Vec<f32>> =
+            (0..self.encoders.len()).map(|s| vec![0.0; n * if s < self.coupled { 2 } else { 1 }]).collect();
+        for (oc, &m) in self.mapping.iter().enumerate() {
+            let m = usize::from(m);
+            let (s, ch, nch) = if m < 2 * self.coupled { (m / 2, m % 2, 2) } else { (m - self.coupled, 0, 1) };
+            for i in 0..n {
+                inputs[s][i * nch + ch] = pcm[i * c + oc];
+            }
+        }
+        let last = self.encoders.len() - 1;
+        let mut out = Vec::new();
+        for (s, e) in self.encoders.iter_mut().enumerate() {
+            let p = e.encode(&inputs[s])?;
+            if s < last {
+                out.extend_from_slice(&packet::to_self_delimited(&p)?);
+            } else {
+                out.extend_from_slice(&p);
+            }
+        }
+        Ok(out)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -298,5 +397,58 @@ mod tests {
         let mut bad = surround.clone();
         bad[13] = 9;
         assert!(OpusHead::parse(&bad).is_err(), "index past the decoded channels");
+    }
+}
+
+#[cfg(test)]
+mod round_trip {
+    use super::*;
+
+    fn power(pcm: &[f32], ch: usize, c: usize, freq: f32) -> f32 {
+        let w = 2.0 * std::f32::consts::PI * freq / 48_000.0;
+        let (mut s1, mut s2) = (0.0f32, 0.0f32);
+        for x in pcm.iter().skip(c).step_by(ch) {
+            let s = x + 2.0 * w.cos() * s1 - s2;
+            s2 = s1;
+            s1 = s;
+        }
+        s1 * s1 + s2 * s2 - 2.0 * w.cos() * s1 * s2
+    }
+
+    /// Every layout from mono to 7.1: each channel's own tone comes back in
+    /// its own channel, well above the others'.
+    #[test]
+    fn surround_channels_stay_apart() {
+        for ch in 1..=8usize {
+            let freqs: Vec<f32> = (0..ch).map(|k| 300.0 + 170.0 * k as f32).collect();
+            let cfg = EncoderConfig { channels: ch, bitrate: 64_000 * ch as u32, ..EncoderConfig::default() };
+            let mut enc = MultistreamEncoder::new(cfg).unwrap();
+            let head = OpusHead::parse(&enc.head().to_bytes()).unwrap();
+            assert_eq!(head.family, if ch <= 2 { 0 } else { 1 });
+            let mut dec = MultistreamDecoder::from_head(&head, 48000).unwrap();
+            let n = enc.frame_samples();
+            let mut out = Vec::new();
+            for k in 0..60 {
+                let pcm: Vec<f32> = (0..n * ch)
+                    .map(|i| {
+                        let (t, c) = ((k * n + i / ch) as f32 / 48000.0, i % ch);
+                        0.25 * (2.0 * std::f32::consts::PI * freqs[c] * t).sin()
+                    })
+                    .collect();
+                let p = enc.encode(&pcm).unwrap();
+                out.extend(dec.decode(Some(&p)).unwrap());
+                assert_eq!(dec.final_range(), enc.final_range());
+            }
+            let steady = &out[ch * 4800..];
+            for c in 0..ch {
+                let own = power(steady, ch, c, freqs[c]);
+                for (o, &g) in freqs.iter().enumerate() {
+                    // The LFE stream is band-limited: skip tones above it.
+                    if o != c && g < 3000.0 {
+                        assert!(own > 30.0 * power(steady, ch, c, g), "{ch} channels: channel {c} carries channel {o}'s tone");
+                    }
+                }
+            }
+        }
     }
 }
