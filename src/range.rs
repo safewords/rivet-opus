@@ -1,22 +1,22 @@
-//! The range coder of RFC 6716 Â§4.1 (decoding) and Â§5.1 (encoding).
+//! The range coder of RFC 6716 §4.1 (decoding) and §5.1 (encoding).
 //!
-//! Both sides keep the RFC's state exactly â€” `rng`, `val`, the whole-bit
-//! counter `nbits_total` â€” because the CELT bit allocation is driven by
+//! Both sides keep the RFC's state exactly — `rng`, `val`, the whole-bit
+//! counter `nbits_total` — because the CELT bit allocation is driven by
 //! [`RangeDecoder::tell_frac`] and must agree bit for bit between encoder and
-//! decoder. Raw bits (Â§4.1.4) are packed backwards from the end of the frame.
+//! decoder. Raw bits (§4.1.4) are packed backwards from the end of the frame.
 
-/// `ilog(n)` of RFC 6716 Â§1.1.10: the number of bits needed to write `n`
+/// `ilog(n)` of RFC 6716 §1.1.10: the number of bits needed to write `n`
 /// (0 for 0).
 #[inline]
 pub(crate) fn ilog(n: u32) -> i32 {
     32 - n.leading_zeros() as i32
 }
 
-/// The range decoder of RFC 6716 Â§4.1.
+/// The range decoder of RFC 6716 §4.1.
 #[derive(Clone)]
 pub struct RangeDecoder<'a> {
     buf: &'a [u8],
-    /// Bytes of `buf` that belong to this frame (Â§4.5.1.3 may shrink it).
+    /// Bytes of `buf` that belong to this frame (§4.5.1.3 may shrink it).
     storage: usize,
     /// Bytes read from the front.
     offs: usize,
@@ -35,7 +35,7 @@ pub struct RangeDecoder<'a> {
 }
 
 impl<'a> RangeDecoder<'a> {
-    /// Starts decoding `buf` (Â§4.1.1).
+    /// Starts decoding `buf` (§4.1.1).
     pub fn new(buf: &'a [u8]) -> Self {
         let mut d = Self {
             buf,
@@ -78,7 +78,7 @@ impl<'a> RangeDecoder<'a> {
         }
     }
 
-    /// Â§4.1.2.1.
+    /// §4.1.2.1.
     #[inline]
     fn normalize(&mut self) {
         while self.rng <= 1 << 23 {
@@ -91,7 +91,7 @@ impl<'a> RangeDecoder<'a> {
         }
     }
 
-    /// The first step of Â§4.1.2: the value `fs` in `[0, ft)` that locates the
+    /// The first step of §4.1.2: the value `fs` in `[0, ft)` that locates the
     /// next symbol.
     #[inline]
     pub fn decode(&mut self, ft: u32) -> u32 {
@@ -100,7 +100,7 @@ impl<'a> RangeDecoder<'a> {
         ft - (s + 1).min(ft)
     }
 
-    /// [`Self::decode`] with `ft = 1 << bits` (Â§4.1.3.1).
+    /// [`Self::decode`] with `ft = 1 << bits` (§4.1.3.1).
     #[inline]
     pub fn decode_bin(&mut self, bits: u32) -> u32 {
         self.ext = self.rng >> bits;
@@ -108,7 +108,7 @@ impl<'a> RangeDecoder<'a> {
         (1u32 << bits) - (s + 1).min(1u32 << bits)
     }
 
-    /// The second step of Â§4.1.2, with the symbol's `(fl, fh, ft)`.
+    /// The second step of §4.1.2, with the symbol's `(fl, fh, ft)`.
     #[inline]
     pub fn update(&mut self, fl: u32, fh: u32, ft: u32) {
         let s = self.ext * (ft - fh);
@@ -117,7 +117,7 @@ impl<'a> RangeDecoder<'a> {
         self.normalize();
     }
 
-    /// One binary symbol whose "1" has probability `2^-logp` (Â§4.1.3.2).
+    /// One binary symbol whose "1" has probability `2^-logp` (§4.1.3.2).
     #[inline]
     pub fn bit_logp(&mut self, logp: u32) -> bool {
         let s = self.rng >> logp;
@@ -132,7 +132,7 @@ impl<'a> RangeDecoder<'a> {
         one
     }
 
-    /// A symbol from an inverse-CDF table with `ft = 1 << ftb` (Â§4.1.3.3).
+    /// A symbol from an inverse-CDF table with `ft = 1 << ftb` (§4.1.3.3).
     #[inline]
     pub fn icdf(&mut self, icdf: &[u8], ftb: u32) -> usize {
         let r = self.rng >> ftb;
@@ -153,7 +153,7 @@ impl<'a> RangeDecoder<'a> {
         k
     }
 
-    /// A uniformly distributed integer in `[0, ft)` (Â§4.1.5). An index past
+    /// A uniformly distributed integer in `[0, ft)` (§4.1.5). An index past
     /// the end marks the frame corrupt and saturates to `ft - 1`.
     pub fn uint(&mut self, ft: u32) -> u32 {
         debug_assert!(ft > 1);
@@ -178,7 +178,7 @@ impl<'a> RangeDecoder<'a> {
         }
     }
 
-    /// `n` raw bits from the end of the frame (Â§4.1.4), `n <= 25`.
+    /// `n` raw bits from the end of the frame (§4.1.4), `n <= 25`.
     pub fn bits(&mut self, n: u32) -> u32 {
         if n == 0 {
             return 0;
@@ -203,19 +203,19 @@ impl<'a> RangeDecoder<'a> {
         ret
     }
 
-    /// Bits used so far, rounded up (Â§4.1.6.1).
+    /// Bits used so far, rounded up (§4.1.6.1).
     #[inline]
     pub fn tell(&self) -> i32 {
         self.nbits_total - ilog(self.rng)
     }
 
-    /// Bits used so far in 1/8 bits (Â§4.1.6.2).
+    /// Bits used so far in 1/8 bits (§4.1.6.2).
     pub fn tell_frac(&self) -> i32 {
         tell_frac(self.nbits_total, self.rng)
     }
 
     /// The current range: after the last symbol of a frame, the "final range"
-    /// a conforming decoder must reproduce (RFC 6716 Â§6).
+    /// a conforming decoder must reproduce (RFC 6716 §6).
     pub fn range(&self) -> u32 {
         self.rng
     }
@@ -225,7 +225,7 @@ impl<'a> RangeDecoder<'a> {
         self.storage
     }
 
-    /// Drops `n` bytes from the end of the frame (Â§4.5.1.3: the redundant
+    /// Drops `n` bytes from the end of the frame (§4.5.1.3: the redundant
     /// CELT frame is cut off before the CELT layer reads its raw bits).
     pub fn shrink(&mut self, n: usize) {
         self.storage = self.storage.saturating_sub(n);
@@ -256,7 +256,7 @@ fn tell_frac(nbits_total: i32, rng: u32) -> i32 {
     nbits - l
 }
 
-/// The range encoder of RFC 6716 Â§5.1, writing into a buffer of fixed size.
+/// The range encoder of RFC 6716 §5.1, writing into a buffer of fixed size.
 #[derive(Clone)]
 pub struct RangeEncoder {
     buf: Vec<u8>,
@@ -309,7 +309,7 @@ impl RangeEncoder {
         self.buf[n - self.end_offs] = b as u8;
     }
 
-    /// Â§5.1.1.2.
+    /// §5.1.1.2.
     fn carry_out(&mut self, c: u32) {
         if c == 255 {
             self.ext += 1;
@@ -329,7 +329,7 @@ impl RangeEncoder {
         self.rem = (c & 255) as i32;
     }
 
-    /// Â§5.1.1.1.
+    /// §5.1.1.1.
     #[inline]
     fn normalize(&mut self) {
         while self.rng <= 1 << 23 {
@@ -340,7 +340,7 @@ impl RangeEncoder {
         }
     }
 
-    /// Encodes the symbol `(fl, fh, ft)` (Â§5.1.1).
+    /// Encodes the symbol `(fl, fh, ft)` (§5.1.1).
     #[inline]
     pub fn encode(&mut self, fl: u32, fh: u32, ft: u32) {
         let r = self.rng / ft;
@@ -366,7 +366,7 @@ impl RangeEncoder {
         self.normalize();
     }
 
-    /// One binary symbol whose "1" has probability `2^-logp` (Â§5.1.2.2).
+    /// One binary symbol whose "1" has probability `2^-logp` (§5.1.2.2).
     #[inline]
     pub fn bit_logp(&mut self, bit: bool, logp: u32) {
         let r = self.rng >> logp;
@@ -379,7 +379,7 @@ impl RangeEncoder {
         self.normalize();
     }
 
-    /// Symbol `s` of an inverse-CDF table with `ft = 1 << ftb` (Â§5.1.2.3).
+    /// Symbol `s` of an inverse-CDF table with `ft = 1 << ftb` (§5.1.2.3).
     #[inline]
     pub fn icdf(&mut self, s: usize, icdf: &[u8], ftb: u32) {
         let r = self.rng >> ftb;
@@ -392,7 +392,7 @@ impl RangeEncoder {
         self.normalize();
     }
 
-    /// A uniformly distributed integer `t` in `[0, ft)` (Â§5.1.4).
+    /// A uniformly distributed integer `t` in `[0, ft)` (§5.1.4).
     pub fn uint(&mut self, t: u32, ft: u32) {
         debug_assert!(ft > 1 && t < ft);
         let ftm1 = ft - 1;
@@ -408,7 +408,7 @@ impl RangeEncoder {
         }
     }
 
-    /// `n` raw bits at the end of the frame (Â§5.1.3), `n <= 25`.
+    /// `n` raw bits at the end of the frame (§5.1.3), `n <= 25`.
     pub fn bits(&mut self, value: u32, n: u32) {
         if n == 0 {
             return;
@@ -474,13 +474,13 @@ impl RangeEncoder {
         self.buf[n - self.end_offs..].copy_from_slice(&tail);
     }
 
-    /// Finalizes the frame (Â§5.1.5) and returns its bytes.
+    /// Finalizes the frame (§5.1.5) and returns its bytes.
     pub fn finish(mut self) -> Vec<u8> {
         self.done();
         self.buf
     }
 
-    /// The Â§5.1.5 termination.
+    /// The §5.1.5 termination.
     fn done(&mut self) {
         // The value in [val, val+rng) with the most trailing zero bits.
         let mut l = 32 - ilog(self.rng);
@@ -644,7 +644,7 @@ mod tests {
     }
 
     /// Everything encoded decodes to itself, and the encoder's range and
-    /// `tell_frac` agree with the decoder's after every symbol (Â§5.1: "the
+    /// `tell_frac` agree with the decoder's after every symbol (§5.1: "the
     /// value of rng in the encoder should exactly match").
     #[test]
     fn round_trip_and_matching_state() {
@@ -690,7 +690,7 @@ mod tests {
         }
     }
 
-    /// Â§4.1.6.1: a fresh decoder reports one bit used, and `tell` is the
+    /// §4.1.6.1: a fresh decoder reports one bit used, and `tell` is the
     /// ceiling of `tell_frac / 8`.
     #[test]
     fn tell_starts_at_one_bit() {
