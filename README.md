@@ -118,8 +118,8 @@ measured after the encoder's lookahead. CBR rates are exact. A selection at
 | SILK 8 kb/s per channel | speech | 7.7 dB | 17.0 dB |
 | SILK 16 kb/s per channel | speech | 15.4 dB | 26.2 dB |
 | SILK 32 kb/s per channel | speech | 27.2 dB | 33.2 dB |
-| hybrid 24 kb/s per channel | speech | 12.4 dB | 23.8 dB |
-| hybrid 32 kb/s per channel | speech | 16.8 dB | 27.4 dB |
+| hybrid 24 kb/s per channel | speech | 18.4 dB | 29.2 dB |
+| hybrid 32 kb/s per channel | speech | 21.3 dB | 31.3 dB |
 
 (The stereo speech signal is one voice at two levels, so its side channel is nearly free. The 32 dB ceiling at 510 kb/s is the test signal's noise above 20 kHz, which
 Opus does not code.) The full matrix covers 2.5–60 ms, 8–510 kb/s, mono and
@@ -127,7 +127,12 @@ stereo, CBR and VBR, in all three modes, plus 8–24 kHz input. `tests/loss.rs`
 drops packets in every mode (concealment stays bounded) and recovers a lost
 SILK packet from the next one's LBRR data (26 dB mono, 33 dB stereo, against
 6 dB for concealment). The multistream round trip keeps each of 1–8
-channels' tones in its own channel.
+channels' tones in its own channel. `tests/final_range.rs` checks encoder
+and decoder final ranges on every packet across SILK, hybrid and CELT, mono
+and stereo, CBR, VBR and LBRR, 6–510 kb/s and every frame size, on speech,
+music and a hard-panned pair. Hybrid stereo keeps hard-panned tone pairs
+(440/660 Hz to 3/5 kHz) 24–33 dB apart at 32 kb/s, 38–43 dB at 40 kb/s and 57–61 dB at
+64 kb/s (`tests/stereo_separation.rs`, `hybrid_separation_table`).
 
 **Unit tests**: range coder round trips with matching encoder/decoder state
 after every symbol; Laplace coding; the PVQ codebook enumerated exhaustively

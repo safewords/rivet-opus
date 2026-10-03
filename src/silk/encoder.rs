@@ -504,7 +504,11 @@ impl ChannelEncoder {
         let (_, min_lag, max_lag, _) = pitch_params(fs);
         let start = HIST;
         let mut best = (0.0f64, min_lag);
-        for lag in min_lag..=max_lag {
+        // The primary lag is coded as lag_min plus 32 steps of lag_scale
+        // plus the low part (RFC 6716 §4.2.7.6.1), so it reaches
+        // lag_max - 1; only the per-subframe lags (primary plus contour
+        // offset, clamped) may reach lag_max.
+        for lag in min_lag..max_lag {
             let c = ncorr(&res, start, n, lag as usize);
             // A slight preference for short lags avoids pitch multiples.
             let score = c * (1.0 - 0.15 * (f64::from(lag) / f64::from(min_lag)).log2() / 4.0);
@@ -523,7 +527,7 @@ impl ChannelEncoder {
             // Refine: primary lag near the best one and a contour.
             let cb_count = contour_icdf(fs, nb_subfr).len();
             let mut bestc = (f64::MIN, lag, 0usize);
-            for p in (lag - 2).max(min_lag)..=(lag + 2).min(max_lag) {
+            for p in (lag - 2).max(min_lag)..=(lag + 2).min(max_lag - 1) {
                 for ci in 0..cb_count {
                     let off = contour_offsets(fs, nb_subfr, ci);
                     let mut s = 0.0;

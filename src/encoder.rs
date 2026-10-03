@@ -16,6 +16,15 @@ pub const LOOKAHEAD_48K: usize = 312;
 /// Lookahead the SILK analysis gets beyond each frame, in ms.
 const SILK_LOOKAHEAD_MS: f64 = 4.5;
 
+/// Bits a hybrid frame keeps for its CELT layer at least, beyond what the
+/// SILK layer used: the redundancy flag's 37-bit gate (§4.5.1.1) and a
+/// little coarse energy for the bands above 8 kHz.
+const HYBRID_CELT_MIN_BITS: i32 = 48;
+
+/// The SILK layer's part of a hybrid stream's rate (per channel, before
+/// its 8-22 kb/s clamp).
+const HYBRID_SILK_SHARE: f64 = 0.8;
+
 /// What the encoder is tuned for (RFC 6716 §2.1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Application {
@@ -454,9 +463,16 @@ impl Encoder {
             let count = n / sub;
             let overhead = if count == 1 { 1 } else { 2 };
             let per_frame = ((total_bytes.saturating_sub(overhead)) / count).clamp(8, packet::MAX_FRAME_BYTES);
-            // The SILK layer's share (§2.1.1: hybrid splits the rate).
+            // The SILK layer's share (§2.1.1: hybrid splits the rate). It
+            // codes everything below 8 kHz; the CELT layer only bands 17 and
+            // up (§4.3), which take few bits. With 55 % of the rate SILK had
+            // too little for stereo: mid and side at some 4-6 kb/s each
+            // reproduced a hard-panned pair with errors that do not cancel
+            // in L = mid + side, and each side's tone crossed over at -8 to
+            // -14 dB at 24-32 kb/s. At 80 % the same pair stays 24-33 dB
+            // apart at 32 kb/s (tests/stereo_separation.rs).
             let per_ch = self.cfg.bitrate as f64 / c as f64;
-            let silk_rate = (0.55 * per_ch).clamp(8000.0, 22000.0) * c as f64;
+            let silk_rate = (HYBRID_SILK_SHARE * per_ch).clamp(8000.0, 22000.0) * c as f64;
             let silk_bits = ((silk_rate * sub as f64 / 48000.0) as i32).min(per_frame as i32 * 8 - 40);
             let sub_len = sub * fs_khz / 48;
             let ahead_len = silk_in.len() / c - frame_len_total;
@@ -464,15 +480,29 @@ impl Encoder {
             self.silk.hard_limit = true;
             let cfg = FrameConfig { start: 17, end: bw.celt_end_band(), bitrate: self.cfg.bitrate as i32 };
             for k in 0..count {
-                let mut enc = RangeEncoder::new(per_frame);
+                // The SILK layer goes into a coder with room for the largest
+                // frame: its rate loop aims at `silk_bits`, but a frame's
+                // side information alone (a voiced wideband frame: gains,
+                // 16 LSF indices, pitch, LTP; §4.2.7) can take more than a
+                // low rate's share. The frame's size is fixed only after it
+                // (§4.1.1, §4.5.1.1 and §4.3 all read the size the decoder
+                // sees): the target, or what SILK used plus a minimum for the
+                // CELT layer, whichever is larger. Coding into the target
+                // size regardless overflowed the coder at 16-24 kb/s, and the
+                // decoder lost sync with the encoder.
+                let mut enc = RangeEncoder::new(packet::MAX_FRAME_BYTES);
                 let lo = k * sub_len * c;
                 let hi = (k * sub_len + sub_len + ahead_len) * c;
                 self.silk.encode(&mut enc, &silk_in[lo..hi.min(silk_in.len())], sub_len, fs_khz, sub / 48, silk_bits, self.cfg.fec);
+                let need = ((enc.tell() + HYBRID_CELT_MIN_BITS + 7) >> 3) as usize;
+                let frame_bytes = per_frame.max(need).min(packet::MAX_FRAME_BYTES);
+                enc.shrink(frame_bytes);
                 // The redundancy flag (§4.5.1.1), always off.
-                if enc.tell() + 37 <= (per_frame * 8) as i32 {
+                if enc.tell() + 37 <= (frame_bytes * 8) as i32 {
                     enc.bit_logp(false, 12);
                 }
                 self.celt.encode(&delayed[k * sub * c..(k + 1) * sub * c], sub, &mut enc, cfg);
+                debug_assert!(!enc.error(), "hybrid frame overflowed");
                 self.final_range = enc.range();
                 frames.push(enc.finish());
             }

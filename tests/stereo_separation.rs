@@ -158,6 +158,47 @@ fn separation_table() {
     }
 }
 
+/// Hybrid stereo (SILK below 8 kHz, CELT from band 17) at 16 to 64 kb/s.
+#[test]
+#[ignore = "a report; run with --ignored --nocapture"]
+fn hybrid_separation_table() {
+    let pairs: [(f32, f32, &str); 4] =
+        [(440.0, 660.0, "440/660"), (400.0, 600.0, "400/600"), (1000.0, 1200.0, "1000/1200"), (3000.0, 5000.0, "3k/5k")];
+    eprintln!("hybrid 20 ms: leak with both tones / with the other side silent, dB re the tone");
+    eprint!("{:>10}", "kb/s");
+    for p in pairs {
+        eprint!(" | {:>13}", p.2);
+    }
+    eprintln!();
+    for r in [16_000, 20_000, 24_000, 28_000, 32_000, 40_000, 48_000, 64_000] {
+        eprint!("{:>10.1}", r as f32 / 1000.0);
+        for (fl, fr, _) in pairs {
+            match leak(cfg(r, 960, Some(Mode::Hybrid)), fl, fr, false) {
+                Some(l) => eprint!(" | {:>6.1} /{:>5.1}", l.both, l.alone),
+                None => eprint!(" | {:>13}", "range differs"),
+            }
+        }
+        eprintln!();
+    }
+}
+
+/// Hybrid stereo keeps a hard-panned pair 20 dB apart from 32 kb/s up.
+/// With 55 % of the rate for the SILK layer the pair crossed over at -14
+/// dB at 32 kb/s (and at -26 to -29 dB at 40-48 kb/s); with 80 % it is
+/// -24 to -33 dB at 32 kb/s. Below that SILK's mid and side get too few
+/// bits each for their coding errors to cancel in L and R.
+#[test]
+fn hybrid_hard_panned_tones_stay_apart() {
+    let mut failures = Vec::new();
+    for rate in [32_000, 40_000, 48_000, 64_000] {
+        let l = leak(cfg(rate, 960, Some(Mode::Hybrid)), 440.0, 660.0, false).expect("final ranges agree");
+        if l.both > -20.0 {
+            failures.push(format!("{rate} b/s: {:.1} dB", l.both));
+        }
+    }
+    assert!(failures.is_empty(), "hybrid crosstalk above -20 dB: {failures:#?}");
+}
+
 /// rivet's 5.1 test: FL FR FC LFE BL BR carry 400, 600, 800, 50, 1000 and
 /// 1200 Hz, given in Vorbis order (FL FC FR BL BR LFE), at 320 kb/s.
 /// Returns the worst level of another channel's tone in each channel, in
