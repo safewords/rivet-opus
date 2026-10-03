@@ -119,7 +119,7 @@ measured after the encoder's lookahead. CBR rates are exact. A selection at
 | hybrid 24 kb/s per channel | speech | 12.4 dB | 23.8 dB |
 | hybrid 32 kb/s per channel | speech | 16.8 dB | 27.4 dB |
 
-(The 32 dB ceiling at 510 kb/s is the test signal's noise above 20 kHz, which
+(The stereo speech signal is one voice at two levels, so its side channel is nearly free. The 32 dB ceiling at 510 kb/s is the test signal's noise above 20 kHz, which
 Opus does not code.) The full matrix covers 2.5–60 ms, 8–510 kb/s, mono and
 stereo, CBR and VBR, in all three modes, plus 8–24 kHz input. `tests/loss.rs`
 drops packets in every mode (concealment stays bounded) and recovers a lost
