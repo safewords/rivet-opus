@@ -4,7 +4,7 @@
 /// decoder never panics on bytes it is given.
 #[derive(thiserror::Error, Debug, Clone, PartialEq, Eq)]
 pub enum Error {
-    /// The packet breaks the framing rules of RFC 6716 §3 ([R1]–[R7]) or a
+    /// The packet breaks the framing rules of RFC 6716 §3 (\[R1\]–\[R7\]) or a
     /// frame's contents are not decodable.
     #[error("invalid Opus packet: {0}")]
     InvalidPacket(String),

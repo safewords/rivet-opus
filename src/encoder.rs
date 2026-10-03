@@ -35,6 +35,7 @@ pub struct EncoderConfig {
     pub sample_rate: u32,
     /// 1 or 2.
     pub channels: usize,
+    /// What to tune the mode choice for.
     pub application: Application,
     /// Target bit rate in bit/s, 6 000 to 510 000 (per stream).
     pub bitrate: u32,
@@ -114,6 +115,7 @@ fn valid_frame_size(n: usize) -> bool {
 }
 
 impl Encoder {
+    /// An encoder with the given settings.
     pub fn new(cfg: EncoderConfig) -> Result<Self> {
         if !crate::decoder::SAMPLE_RATES.contains(&cfg.sample_rate) {
             return Err(config(format!("input rate {} is not 8, 12, 16, 24 or 48 kHz", cfg.sample_rate)));
@@ -187,6 +189,21 @@ impl Encoder {
     /// Switches between variable and constant bit rate.
     pub fn set_vbr(&mut self, vbr: bool) {
         self.cfg.vbr = vbr;
+    }
+
+    /// Forces a mode (`None`: choose by rate and application).
+    pub fn set_mode(&mut self, mode: Option<Mode>) {
+        self.cfg.mode = mode;
+    }
+
+    /// Caps the coded bandwidth.
+    pub fn set_max_bandwidth(&mut self, bw: Option<Bandwidth>) {
+        self.cfg.max_bandwidth = bw;
+    }
+
+    /// Turns LBRR (in-band FEC) on or off for SILK and hybrid frames.
+    pub fn set_fec(&mut self, fec: bool) {
+        self.cfg.fec = fec;
     }
 
     /// Sets the complexity (0–10).

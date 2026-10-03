@@ -1,5 +1,5 @@
 //! Opus packet framing (RFC 6716 §3): the TOC byte, the four frame-count
-//! codes, frame lengths and Opus padding — parsing with every rule [R1]–[R7]
+//! codes, frame lengths and Opus padding — parsing with every rule \[R1\]–\[R7\]
 //! enforced, and building packets that obey them.
 
 use crate::error::{Result, invalid};
@@ -178,10 +178,10 @@ fn frame_length(data: &[u8]) -> Result<(usize, usize)> {
     }
 }
 
-/// The longest frame (§3.2.1, [R2]).
+/// The longest frame (§3.2.1, \[R2\]).
 pub const MAX_FRAME_BYTES: usize = 1275;
 
-/// Parses a packet (RFC 6716 §3.2), enforcing [R1]–[R7].
+/// Parses a packet (RFC 6716 §3.2), enforcing \[R1\]–\[R7\].
 pub fn parse(data: &[u8]) -> Result<Packet<'_>> {
     let Some((&first, mut rest)) = data.split_first() else {
         return Err(invalid("empty packet [R1]"));
