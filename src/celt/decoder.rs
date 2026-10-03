@@ -1,126 +1,120 @@
-//! The CELT decoder (RFC 6716 §4.3): frame decoding, synthesis (inverse
-//! MDCT with the low-overlap window), the pitch post-filter, de-emphasis,
-//! and packet loss concealment.
+//! The CELT decoder (CELT_SPEC §1, §9–§11; RFC 6716 §4.3): frame-level
+//! symbol order, anti-collapse, synthesis (energy to amplitude,
+//! denormalisation, inverse MDCT with overlap-add, post-filter,
+//! de-emphasis) and the decoder state, plus packet loss concealment
+//! (RFC 6716 §4.4, non-normative).
 
-use super::bands::{self, FrameParams, SPREAD_NORMAL};
-use super::energy;
-use super::mode::{BITRES, init_caps, mode};
+use super::Synth;
+use super::bands::{self, CollapseMasks, FrameBands, SPREAD_NORMAL};
+use super::energy::{self, BandEnergies};
+use super::mode::mode;
 use super::rate::{self, EncoderChoices};
 use super::tables::*;
-use super::Synth;
 use crate::range::RangeDecoder;
 
-/// Samples of output history kept per channel (for the post-filter and the
-/// PLC).
-pub const DECODE_BUFFER: usize = 2048;
+/// Samples of post-filtered output kept per channel: the longest
+/// post-filter period plus its taps, plus a 20 ms frame (CELT_SPEC §11.1),
+/// with room for the concealment's pitch search.
+const HISTORY: usize = 2048;
 
-/// A CELT decoder for one Opus stream (one or two channels).
+/// Shortest post-filter period (CELT_SPEC §10.5).
+const MIN_PERIOD: usize = 15;
+
+/// Concealment: lag range of the pitch search, in 48 kHz samples.
+const PLC_MIN_LAG: usize = 30;
+const PLC_MAX_LAG: usize = 720;
+/// Concealment: length of the segment the pitch search matches.
+const PLC_WINDOW: usize = 480;
+
+/// Post-filter parameters (CELT_SPEC §10.5).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct PostFilter {
+    period: usize,
+    gain: f32,
+    tapset: usize,
+}
+
+/// A CELT decoder (CELT_SPEC §11).
 pub struct CeltDecoder {
-    /// Output channels.
+    /// Output channels (CC).
     channels: usize,
     /// 48000 / output rate.
     downsample: usize,
-    decode_mem: Vec<Vec<f32>>,
-    pub(crate) old_band_e: [f32; 2 * NB_EBANDS],
-    old_log_e: [f32; 2 * NB_EBANDS],
-    old_log_e2: [f32; 2 * NB_EBANDS],
-    postfilter_period: usize,
-    postfilter_period_old: usize,
-    postfilter_gain: f32,
-    postfilter_gain_old: f32,
-    postfilter_tapset: usize,
-    postfilter_tapset_old: usize,
-    preemph_mem: [f32; 2],
-    /// The final range of the last frame, also the folding seed.
-    pub(crate) rng: u32,
-    loss_count: u32,
-    last_pitch: usize,
-    /// Do not invert the phase of intensity-stereo bands (RFC 8251 §10).
+    /// RFC 8251 §10: ignore the decoded stereo phase inversion.
     pub disable_inv: bool,
     synth: Synth,
+    old_band_e: BandEnergies,
+    old_log_e: BandEnergies,
+    old_log_e2: BandEnergies,
+    background_log_e: BandEnergies,
+    rng: u32,
+    pf: PostFilter,
+    pf_old: PostFilter,
+    deemph: [f32; 2],
+    /// Post-filtered output, newest last.
+    history: [Vec<f32>; 2],
+    /// The inverse MDCT's tail for the next frame.
+    overlap: [Vec<f32>; 2],
+    loss_count: u32,
+    /// Coded band range of the last good frame (for concealment).
+    last_start: usize,
+    last_end: usize,
 }
 
 impl CeltDecoder {
-    /// A decoder with `channels` output channels at `48000 / downsample` Hz.
+    /// A decoder producing `channels` output channels at 48000/`downsample`
+    /// Hz.
     pub fn new(channels: usize, downsample: usize) -> Self {
-        let mut d = Self {
+        Self {
             channels,
             downsample,
-            decode_mem: vec![vec![0.0; DECODE_BUFFER + OVERLAP]; channels],
-            old_band_e: [0.0; 2 * NB_EBANDS],
-            old_log_e: [-28.0; 2 * NB_EBANDS],
-            old_log_e2: [-28.0; 2 * NB_EBANDS],
-            postfilter_period: 0,
-            postfilter_period_old: 0,
-            postfilter_gain: 0.0,
-            postfilter_gain_old: 0.0,
-            postfilter_tapset: 0,
-            postfilter_tapset_old: 0,
-            preemph_mem: [0.0; 2],
-            rng: 0,
-            loss_count: 0,
-            last_pitch: 0,
             disable_inv: channels == 1,
             synth: Synth::new(),
-        };
-        d.reset();
-        d
-    }
-
-    /// Returns the decoder to its initial state (§4.5.2).
-    pub fn reset(&mut self) {
-        for m in &mut self.decode_mem {
-            m.fill(0.0);
+            old_band_e: [[0.0; NB_EBANDS]; 2],
+            old_log_e: [[-28.0; NB_EBANDS]; 2],
+            old_log_e2: [[-28.0; NB_EBANDS]; 2],
+            background_log_e: [[0.0; NB_EBANDS]; 2],
+            rng: 0,
+            pf: PostFilter::default(),
+            pf_old: PostFilter::default(),
+            deemph: [0.0; 2],
+            history: [vec![0.0; HISTORY], vec![0.0; HISTORY]],
+            overlap: [vec![0.0; OVERLAP], vec![0.0; OVERLAP]],
+            loss_count: 0,
+            last_start: 0,
+            last_end: NB_EBANDS,
         }
-        self.old_band_e = [0.0; 2 * NB_EBANDS];
-        self.old_log_e = [-28.0; 2 * NB_EBANDS];
-        self.old_log_e2 = [-28.0; 2 * NB_EBANDS];
-        self.postfilter_period = 0;
-        self.postfilter_period_old = 0;
-        self.postfilter_gain = 0.0;
-        self.postfilter_gain_old = 0.0;
-        self.postfilter_tapset = 0;
-        self.postfilter_tapset_old = 0;
-        self.preemph_mem = [0.0; 2];
-        self.rng = 0;
-        self.loss_count = 0;
-        self.last_pitch = 0;
     }
 
-    /// Decodes one frame of `n` samples (at 48 kHz) coded with `c` channels
-    /// from `ec`, whose frame is `ec.storage()` bytes, coding bands
-    /// `start..end`. Writes `n / downsample` interleaved samples per channel
-    /// to `out` (full scale ±1.0); `accumulate` adds instead of writing.
-    #[allow(clippy::too_many_arguments)]
-    pub fn decode(
-        &mut self,
-        ec: &mut RangeDecoder,
-        n: usize,
-        c: usize,
-        start: usize,
-        end: usize,
-        out: &mut [f32],
-        accumulate: bool,
-    ) {
+    /// Back to the initial state (CELT_SPEC §11.1); the phase-inversion
+    /// setting is kept.
+    pub fn reset(&mut self) {
+        let disable_inv = self.disable_inv;
+        *self = Self::new(self.channels, self.downsample);
+        self.disable_inv = disable_inv;
+    }
+
+    /// Decodes one frame of `n48` samples at 48 kHz from `ec`, coded with
+    /// `c` channels over bands `start..end` (CELT_SPEC §1), writing (or
+    /// with `accumulate`, adding) `n48 / downsample` interleaved samples per
+    /// output channel to `out`.
+    pub fn decode(&mut self, ec: &mut RangeDecoder, n48: usize, c: usize, start: usize, end: usize, out: &mut [f32], accumulate: bool) {
         let len = ec.storage();
         if len <= 1 {
-            self.decode_lost(n, out, accumulate);
+            self.decode_lost(n48, out, accumulate);
             return;
         }
-        let lm = match n {
-            120 => 0,
-            240 => 1,
-            480 => 2,
-            _ => 3,
-        };
-        let mm = 1usize << lm;
+        let lm = lm_of(n48);
+        let m = 1usize << lm;
+        let n = n48;
+        let total_bits = (len * 8) as i32;
         if c == 1 {
             for i in 0..NB_EBANDS {
-                self.old_band_e[i] = self.old_band_e[i].max(self.old_band_e[NB_EBANDS + i]);
+                self.old_band_e[0][i] = self.old_band_e[0][i].max(self.old_band_e[1][i]);
             }
         }
-        let total_bits = (len * 8) as i32;
-        let mut tell = ec.tell();
+        // §1.2 steps 1–4.
+        let tell = ec.tell();
         let silence = if tell >= total_bits {
             true
         } else if tell == 1 {
@@ -129,450 +123,366 @@ impl CeltDecoder {
             false
         };
         if silence {
-            // Pretend every bit was used.
             ec.add_bits(total_bits - ec.tell());
-            tell = total_bits;
         }
-        let mut pf_gain = 0.0f32;
-        let mut pf_pitch = 0usize;
-        let mut pf_tapset = 0usize;
-        if start == 0 && tell + 16 <= total_bits {
-            if ec.bit_logp(1) {
-                let octave = ec.uint(6);
-                pf_pitch = ((16usize << octave) + ec.bits(4 + octave) as usize) - 1;
-                let qg = ec.bits(3);
-                if ec.tell() + 2 <= total_bits {
-                    pf_tapset = ec.icdf(&TAPSET_ICDF, 2);
-                }
-                pf_gain = 0.09375 * (qg + 1) as f32;
-            }
-            tell = ec.tell();
+        let mut pf_new = PostFilter::default();
+        if start == 0 && ec.tell() + 16 <= total_bits && ec.bit_logp(1) {
+            let octave = ec.uint(6);
+            let period = (16 << octave) + ec.bits(4 + octave) as usize - 1;
+            let qg = ec.bits(3);
+            let tapset = if ec.tell() + 2 <= total_bits { ec.icdf(&TAPSET_ICDF, 2) } else { 0 };
+            pf_new = PostFilter { period, gain: 0.09375 * (qg + 1) as f32, tapset };
         }
-        let is_transient = if lm > 0 && tell + 3 <= total_bits {
-            let t = ec.bit_logp(3);
-            tell = ec.tell();
-            t
-        } else {
-            false
-        };
-        let intra = if tell + 3 <= total_bits { ec.bit_logp(3) } else { false };
-        energy::unquant_coarse(ec, &mut self.old_band_e, start, end, intra, c, lm);
-        let tf_res = tf_decode(ec, start, end, is_transient, lm, total_bits);
-        tell = ec.tell();
-        let mut spread = SPREAD_NORMAL;
-        if tell + 4 <= total_bits {
-            spread = ec.icdf(&SPREAD_ICDF, 5) as u32;
-        }
-        let cap = init_caps(lm, c);
-        let mut offsets = [0i32; NB_EBANDS];
-        let mut dynalloc_logp = 6;
-        let mut total_bits8 = total_bits << BITRES;
-        let mut tell8 = ec.tell_frac();
-        for i in start..end {
-            let width = (c * (EBANDS[i + 1] - EBANDS[i]) << lm) as i32;
-            let quanta = (width << BITRES).min((6 << BITRES).max(width));
-            let mut loop_logp = dynalloc_logp;
-            let mut boost = 0;
-            while tell8 + ((loop_logp as i32) << BITRES) < total_bits8 && boost < cap[i] {
-                let flag = ec.bit_logp(loop_logp);
-                tell8 = ec.tell_frac();
-                if !flag {
-                    break;
-                }
-                boost += quanta;
-                total_bits8 -= quanta;
-                loop_logp = 1;
-            }
-            offsets[i] = boost;
-            if boost > 0 {
-                dynalloc_logp = 2.max(dynalloc_logp - 1);
-            }
-        }
-        let mut alloc_trim = 5;
-        if tell8 + (6 << BITRES) <= total_bits8 {
-            alloc_trim = ec.icdf(&TRIM_ICDF, 7) as i32;
-        }
-        let mut bits = ((len * 8) as i32) << BITRES;
-        bits -= ec.tell_frac() + 1;
-        let anti_collapse_rsv = if is_transient && lm >= 2 && bits >= (lm as i32 + 2) << BITRES { 1 << BITRES } else { 0 };
+        let transient = lm > 0 && ec.tell() + 3 <= total_bits && ec.bit_logp(3);
+        let intra = ec.tell() + 3 <= total_bits && ec.bit_logp(3);
+        // §1.2 steps 5–10.
+        let mut scratch = [[0.0f32; NB_EBANDS]; 2];
+        let zeros = [[0.0f32; NB_EBANDS]; 2];
+        energy::code_coarse(ec, total_bits, &mut self.old_band_e, &zeros, &mut scratch, start, end, intra, c, lm);
+        let tf_res = bands::code_tf(ec, start, end, transient, lm, total_bits, &[0; NB_EBANDS], false);
+        let spread = if ec.tell() + 4 <= total_bits { ec.icdf(&SPREAD_ICDF, 5) as u32 } else { SPREAD_NORMAL };
+        let cap = rate::init_caps(lm, c);
+        let (offsets, boosted_total) = rate::code_boosts(ec, start, end, c, lm, &cap, &[0; NB_EBANDS], len);
+        let trim = if ec.tell_frac() + (6 << BITRES) <= boosted_total { ec.icdf(&TRIM_ICDF, 7) as i32 } else { 5 };
+        let mut bits = ((len as i32 * 8) << BITRES) - ec.tell_frac() - 1;
+        let anti_collapse_rsv = if transient && lm >= 2 && bits >= (lm as i32 + 2) << BITRES { 1 << BITRES } else { 0 };
         bits -= anti_collapse_rsv;
-        let alloc =
-            rate::compute_allocation(start, end, &offsets, &cap, alloc_trim, bits, c, lm, ec, EncoderChoices::default());
-        let mut err = [0.0f32; 2 * NB_EBANDS];
-        energy::code_fine(ec, &mut self.old_band_e, &mut err, &alloc.fine_quant, start, end, c);
-        let size = n;
-        let mut x = vec![0.0f32; size];
-        let mut y = vec![0.0f32; if c == 2 { size } else { 0 }];
-        let params = FrameParams {
+        let choices = EncoderChoices { intensity: 0, dual_stereo: false, prev_coded: 0 };
+        let alloc = rate::compute_allocation(ec, start, end, &offsets, &cap, trim, bits, c, lm, choices);
+        // §1.2 steps 11–14.
+        energy::code_fine(ec, &mut self.old_band_e, &mut scratch, &alloc.fine_quant, start, end, c);
+        let mut x = vec![0.0f32; n];
+        let mut y = vec![0.0f32; if c == 2 { n } else { 0 }];
+        let blocks = if transient { m } else { 1 };
+        let params = FrameBands {
             start,
             end,
             lm,
-            short_blocks: if is_transient { mm } else { 1 },
+            blocks,
             spread,
             dual_stereo: alloc.dual_stereo,
             intensity: alloc.intensity,
             tf_res: &tf_res,
-            total_bits: (((len * 8) as i32) << BITRES) - anti_collapse_rsv,
+            shape_total: ((len as i32 * 8) << BITRES) - anti_collapse_rsv,
             balance: alloc.balance,
             pulses: &alloc.pulses,
             coded_bands: alloc.coded_bands,
             disable_inv: self.disable_inv,
-            resynth: true,
         };
-        let (collapse, seed) = bands::quant_all_bands(ec, &params, &mut x, &mut y, &[], self.rng);
-        let anti_collapse_on = anti_collapse_rsv > 0 && ec.bits(1) != 0;
-        let left = (len * 8) as i32 - ec.tell();
-        energy::code_finalise(
-            ec,
-            &mut self.old_band_e,
-            &mut err,
-            &alloc.fine_quant,
-            &alloc.fine_priority,
-            left,
-            start,
-            end,
-            c,
-        );
-        let mut xy = x;
-        xy.extend_from_slice(&y);
+        let mut seed = self.rng;
+        let collapse = bands::quant_all_bands(ec, &params, &mut x, if c == 2 { Some(y.as_mut_slice()) } else { None }, &zeros, &mut seed);
+        let anti_collapse_on = anti_collapse_rsv > 0 && ec.bits(1) == 1;
+        let left = total_bits - ec.tell();
+        energy::code_final(ec, &mut self.old_band_e, &mut scratch, &alloc.fine_quant, &alloc.fine_priority, left, start, end, c);
         if anti_collapse_on {
-            bands::anti_collapse(
-                &mut xy,
-                size,
-                &collapse,
-                lm,
-                c,
-                start,
-                end,
-                &self.old_band_e,
-                &self.old_log_e,
-                &self.old_log_e2,
-                &alloc.pulses,
-                seed,
-            );
+            let mut chans: Vec<&mut [f32]> = vec![&mut x];
+            if c == 2 {
+                chans.push(&mut y);
+            }
+            self.anti_collapse(&mut chans, &collapse, lm, start, end, &alloc.pulses, seed);
+        }
+        // §10.1–§10.3.
+        let mut amp = [[0.0f32; NB_EBANDS]; 2];
+        for ch in 0..c {
+            for i in start..end {
+                let lg = (self.old_band_e[ch][i] + E_MEANS[i]).min(32.0);
+                amp[ch][i] = (std::f64::consts::LN_2 * f64::from(lg)).exp() as f32;
+            }
         }
         if silence {
-            self.old_band_e = [-28.0; 2 * NB_EBANDS];
+            amp = [[0.0; NB_EBANDS]; 2];
+            for row in self.old_band_e.iter_mut().take(c) {
+                row.fill(-28.0);
+            }
         }
-        self.synthesize(&xy, n, c, start, end, is_transient, silence);
-        self.postfilter_and_output(n, lm, pf_pitch, pf_gain, pf_tapset, out, accumulate);
-        // Energy history.
+        let mut freq: Vec<Vec<f32>> = Vec::with_capacity(2);
+        for (ch, xs) in [&x, &y].into_iter().enumerate().take(c) {
+            let mut f = vec![0.0f32; n];
+            for i in start..end {
+                for j in m * EBANDS[i]..m * EBANDS[i + 1] {
+                    f[j] = xs[j] * amp[ch][i];
+                }
+            }
+            freq.push(f);
+        }
+        let bound = if self.downsample == 1 { m * EBANDS[end] } else { (m * EBANDS[end]).min(n / self.downsample) };
+        for f in &mut freq {
+            f[bound.min(n)..].fill(0.0);
+        }
+        self.synthesize(freq, n, blocks, pf_new, out, accumulate);
+        // §11.2 steps 7–11.
         if c == 1 {
-            let (a, b) = self.old_band_e.split_at_mut(NB_EBANDS);
-            b.copy_from_slice(a);
+            self.old_band_e[1] = self.old_band_e[0];
         }
-        if !is_transient {
+        if !transient {
             self.old_log_e2 = self.old_log_e;
             self.old_log_e = self.old_band_e;
+            for ch in 0..2 {
+                for i in 0..NB_EBANDS {
+                    self.background_log_e[ch][i] = (self.background_log_e[ch][i] + m as f32 * 0.001).min(self.old_band_e[ch][i]);
+                }
+            }
         } else {
-            for i in 0..2 * NB_EBANDS {
-                self.old_log_e[i] = self.old_log_e[i].min(self.old_band_e[i]);
+            for ch in 0..2 {
+                for i in 0..NB_EBANDS {
+                    self.old_log_e[ch][i] = self.old_log_e[ch][i].min(self.old_band_e[ch][i]);
+                }
             }
         }
         for ch in 0..2 {
             for i in (0..start).chain(end..NB_EBANDS) {
-                self.old_band_e[ch * NB_EBANDS + i] = 0.0;
-                self.old_log_e[ch * NB_EBANDS + i] = -28.0;
-                self.old_log_e2[ch * NB_EBANDS + i] = -28.0;
+                self.old_band_e[ch][i] = 0.0;
+                self.old_log_e[ch][i] = -28.0;
+                self.old_log_e2[ch][i] = -28.0;
             }
         }
         self.rng = ec.range();
         self.loss_count = 0;
+        self.last_start = start;
+        self.last_end = end;
     }
 
-    /// Denormalizes the bands and runs the inverse MDCTs, overlap-adding into
-    /// the decode buffers (which are shifted by `n` first).
-    #[allow(clippy::too_many_arguments)]
-    fn synthesize(&mut self, xy: &[f32], n: usize, c: usize, start: usize, end: usize, transient: bool, silence: bool) {
-        let cc = self.channels;
-        let lm = match n {
-            120 => 0,
-            240 => 1,
-            480 => 2,
-            _ => 3,
-        };
-        let mm = 1 << lm;
-        let mut bound = mm * EBANDS[end];
-        if self.downsample != 1 {
-            bound = bound.min(n / self.downsample);
-        }
-        let denorm = |x: &[f32], e: &[f32]| -> Vec<f32> {
-            let mut f = vec![0.0f32; n];
-            if silence {
-                return f;
-            }
-            for i in start..end {
-                let lg = (e[i] + E_MEANS[i]).min(32.0);
-                let g = lg.exp2();
-                for j in mm * EBANDS[i]..(mm * EBANDS[i + 1]).min(bound) {
-                    f[j] = x[j] * g;
+    /// Anti-collapse (CELT_SPEC §9): noise in the short blocks of
+    /// transient bands that received no pulses.
+    fn anti_collapse(&self, chans: &mut [&mut [f32]], collapse: &CollapseMasks, lm: usize, start: usize, end: usize, pulses: &[i32; NB_EBANDS], mut seed: u32) {
+        let m = 1usize << lm;
+        let c = chans.len();
+        for i in start..end {
+            let n0 = EBANDS[i + 1] - EBANDS[i];
+            let depth = (1 + pulses[i]) / (n0 << lm) as i32;
+            let thresh = 0.5 * (-0.125 * depth as f32).exp2();
+            let sqrt_1 = 1.0 / ((n0 << lm) as f32).sqrt();
+            for ch in 0..c {
+                let (mut p1, mut p2) = (self.old_log_e[ch][i], self.old_log_e2[ch][i]);
+                if c == 1 {
+                    p1 = p1.max(self.old_log_e[1][i]);
+                    p2 = p2.max(self.old_log_e2[1][i]);
+                }
+                let ediff = (self.old_band_e[ch][i] - p1.min(p2)).max(0.0);
+                let mut r = 2.0 * (-ediff).exp2();
+                if lm == 3 {
+                    r *= std::f32::consts::SQRT_2;
+                }
+                let r = r.min(thresh) * sqrt_1;
+                let band = &mut chans[ch][m * EBANDS[i]..m * EBANDS[i + 1]];
+                let mut filled = false;
+                for k in 0..m {
+                    if u32::from(collapse[i][ch]) & 1 << k == 0 {
+                        for j in 0..n0 {
+                            seed = bands::lcg(seed);
+                            band[j * m + k] = if seed & 0x8000 != 0 { r } else { -r };
+                        }
+                        filled = true;
+                    }
+                }
+                if filled {
+                    bands::renormalise(band, 1.0);
                 }
             }
-            f
-        };
-        let freqs: Vec<Vec<f32>> = if cc == 2 && c == 1 {
-            let f = denorm(&xy[..n], &self.old_band_e[..NB_EBANDS]);
-            vec![f.clone(), f]
-        } else if cc == 1 && c == 2 {
-            let f1 = denorm(&xy[..n], &self.old_band_e[..NB_EBANDS]);
-            let f2 = denorm(&xy[n..2 * n], &self.old_band_e[NB_EBANDS..]);
-            vec![f1.iter().zip(&f2).map(|(a, b)| 0.5 * a + 0.5 * b).collect()]
-        } else {
-            (0..cc).map(|ch| denorm(&xy[ch * n..(ch + 1) * n], &self.old_band_e[ch * NB_EBANDS..])).collect()
-        };
-        let blocks = if transient { mm } else { 1 };
-        for (ch, f) in freqs.iter().enumerate() {
-            let mem = &mut self.decode_mem[ch];
-            mem.copy_within(n.., 0);
-            let out = &mut mem[DECODE_BUFFER - n..];
-            self.synth.imdct_ola(f, out, n, blocks);
         }
     }
 
-    /// Applies the post-filter to this frame's `n` samples, de-emphasizes
-    /// and writes them out.
-    #[allow(clippy::too_many_arguments)]
-    fn postfilter_and_output(
-        &mut self,
-        n: usize,
-        lm: usize,
-        pitch: usize,
-        gain: f32,
-        tapset: usize,
-        out: &mut [f32],
-        accumulate: bool,
-    ) {
-        let window = &mode().window;
-        self.postfilter_period = self.postfilter_period.max(COMB_MIN_PERIOD);
-        self.postfilter_period_old = self.postfilter_period_old.max(COMB_MIN_PERIOD);
-        for ch in 0..self.channels {
-            let mem = &mut self.decode_mem[ch];
-            let base = DECODE_BUFFER - n;
-            comb_filter(
-                mem,
-                base,
-                self.postfilter_period_old,
-                self.postfilter_period,
-                SHORT_MDCT,
-                self.postfilter_gain_old,
-                self.postfilter_gain,
-                self.postfilter_tapset_old,
-                self.postfilter_tapset,
-                window,
-            );
-            if lm != 0 {
-                comb_filter(
-                    mem,
-                    base + SHORT_MDCT,
-                    self.postfilter_period,
-                    pitch,
-                    n - SHORT_MDCT,
-                    self.postfilter_gain,
-                    gain,
-                    self.postfilter_tapset,
-                    tapset,
-                    window,
-                );
+    /// From coded-channel spectra to output samples (CELT_SPEC §10.3–§10.6):
+    /// channel mapping, inverse MDCT with overlap-add, post-filter,
+    /// de-emphasis and decimation. Updates the post-filter state.
+    fn synthesize(&mut self, mut freq: Vec<Vec<f32>>, n: usize, blocks: usize, pf_new: PostFilter, out: &mut [f32], accumulate: bool) {
+        let cc = self.channels;
+        if cc == 2 && freq.len() == 1 {
+            freq.push(freq[0].clone());
+        } else if cc == 1 && freq.len() == 2 {
+            let f1 = freq.pop().unwrap_or_default();
+            for (a, b) in freq[0].iter_mut().zip(&f1) {
+                *a = 0.5 * (*a + b);
             }
         }
-        self.postfilter_period_old = self.postfilter_period;
-        self.postfilter_gain_old = self.postfilter_gain;
-        self.postfilter_tapset_old = self.postfilter_tapset;
-        self.postfilter_period = pitch;
-        self.postfilter_gain = gain;
-        self.postfilter_tapset = tapset;
-        if lm != 0 {
-            self.postfilter_period_old = self.postfilter_period;
-            self.postfilter_gain_old = self.postfilter_gain;
-            self.postfilter_tapset_old = self.postfilter_tapset;
-        }
-        self.deemphasis(n, out, accumulate);
-    }
-
-    fn deemphasis(&mut self, n: usize, out: &mut [f32], accumulate: bool) {
-        let cc = self.channels;
-        let ds = self.downsample;
-        for ch in 0..cc {
-            let mem = &self.decode_mem[ch];
-            let mut m = self.preemph_mem[ch];
-            let src = &mem[DECODE_BUFFER - n..DECODE_BUFFER];
-            for (j, &s) in src.iter().enumerate() {
-                let v = s + DEEMPHASIS * m;
-                m = v;
+        // The textbook inverse MDCT of CELT_SPEC §10.4. The gain
+        // 1 + (π/(8n))² that section adds is left out: with it the CELT
+        // test vectors lose about 10 dB of SNR (106 → 96 dB on vector 01).
+        let lm = lm_of(n);
+        self.pf.period = self.pf.period.max(MIN_PERIOD);
+        self.pf_old.period = self.pf_old.period.max(MIN_PERIOD);
+        let mut buf = vec![0.0f32; n + OVERLAP];
+        for (ch, f) in freq.iter().enumerate() {
+            buf[..OVERLAP].copy_from_slice(&self.overlap[ch]);
+            self.synth.imdct_ola(f, &mut buf, n, blocks);
+            self.overlap[ch].copy_from_slice(&buf[n..n + OVERLAP]);
+            let h = &mut self.history[ch];
+            h.copy_within(n.., 0);
+            h[HISTORY - n..].copy_from_slice(&buf[..n]);
+            let base = HISTORY - n;
+            comb_filter(h, base, OVERLAP, self.pf_old, self.pf, OVERLAP);
+            if lm != 0 {
+                comb_filter(h, base + OVERLAP, n - OVERLAP, self.pf, pf_new, OVERLAP);
+            }
+            let mut mem = self.deemph[ch];
+            let ds = self.downsample;
+            for j in 0..n {
+                let t = h[base + j] + mem;
+                mem = PREEMPH_COEF * t;
                 if j % ds == 0 {
                     let o = &mut out[(j / ds) * cc + ch];
-                    let sample = v * (1.0 / 32768.0);
+                    let v = t * (1.0 / 32768.0);
                     if accumulate {
-                        *o += sample;
+                        *o += v;
                     } else {
-                        *o = sample;
+                        *o = v;
                     }
                 }
             }
-            self.preemph_mem[ch] = m;
+            self.deemph[ch] = mem;
+        }
+        self.pf_old = self.pf;
+        self.pf = pf_new;
+        if lm != 0 {
+            self.pf_old = pf_new;
         }
     }
 
-    /// Packet loss concealment (§4.4): repeats the last pitch period of the
-    /// output with a decaying gain, through the same overlap-add as decoded
-    /// frames so the transition keeps time-domain aliasing cancellation.
-    pub fn decode_lost(&mut self, n: usize, out: &mut [f32], accumulate: bool) {
-        let cc = self.channels;
-        if self.loss_count == 0 {
-            self.last_pitch = self.find_pitch();
-        }
+    /// Packet loss concealment for one frame of `n48` samples (RFC 6716
+    /// §4.4; CELT_SPEC §11.4 describes what later frames depend on). Our
+    /// own design: after a good CELT-only frame the output is continued
+    /// periodically at the pitch found in the history, fading frame by
+    /// frame, and fed through the regular synthesis (forward MDCT of the
+    /// continuation, then inverse MDCT with overlap-add) so the overlap
+    /// with the previous and the next frame cancels its aliasing as in
+    /// normal decoding. After five losses in a row, or after a hybrid
+    /// frame, it is noise shaped by decaying band energies.
+    pub fn decode_lost(&mut self, n48: usize, out: &mut [f32], accumulate: bool) {
+        let n = n48;
+        let lm = lm_of(n);
+        let m = 1usize << lm;
+        let (start, end) = (self.last_start, self.last_end);
+        let pf = self.pf;
+        let freq: Vec<Vec<f32>> = if self.loss_count >= 5 || start != 0 {
+            let decay = if self.loss_count == 0 { 1.5 } else { 0.5 };
+            let mut freq = Vec::with_capacity(self.channels);
+            for ch in 0..self.channels {
+                let mut f = vec![0.0f32; n];
+                for i in start..end {
+                    let e = &mut self.old_band_e[ch][i];
+                    *e = (*e - decay).max(-28.0);
+                    let amp = (*e + E_MEANS[i]).min(32.0).exp2();
+                    let band = &mut f[m * EBANDS[i]..m * EBANDS[i + 1]];
+                    for v in band.iter_mut() {
+                        self.rng = bands::lcg(self.rng);
+                        *v = (self.rng as i32 >> 20) as f32;
+                    }
+                    bands::renormalise(band, amp);
+                }
+                let bound = (m * EBANDS[end]).min(n / self.downsample);
+                f[bound..].fill(0.0);
+                freq.push(f);
+            }
+            freq
+        } else {
+            let lag = self.pitch_lag();
+            // Periodic signals fade slowly, others quickly.
+            let fade = if lag.1 > 0.6 { 0.85f32 } else { 0.5 };
+            let mut freq = Vec::with_capacity(self.channels);
+            for ch in 0..self.channels {
+                let h = &self.history[ch];
+                let total = n + OVERLAP;
+                // The continuation of the post-filtered output…
+                let mut cont = vec![0.0f32; total];
+                for j in 0..total {
+                    let src = HISTORY as isize + j as isize - lag.0 as isize;
+                    cont[j] = if src < HISTORY as isize { h[src as usize] } else { cont[src as usize - HISTORY] };
+                }
+                for (j, v) in cont.iter_mut().enumerate() {
+                    *v *= fade.powf(((j + 1).min(n) as f32) / n as f32);
+                }
+                // …taken back before the post-filter, which synthesis
+                // applies again with the current parameters.
+                let at = |j: isize| if j < 0 { h[(HISTORY as isize + j) as usize] } else { cont[j as usize] };
+                let gains = COMB_FILTER_GAINS[pf.tapset];
+                let t = pf.period.max(MIN_PERIOD) as isize;
+                let mut pre = cont.clone();
+                if pf.gain != 0.0 {
+                    for (j, p) in pre.iter_mut().enumerate() {
+                        let j = j as isize;
+                        *p -= pf.gain
+                            * (gains[0] * at(j - t) + gains[1] * (at(j - t - 1) + at(j - t + 1)) + gains[2] * (at(j - t - 2) + at(j - t + 2)));
+                    }
+                }
+                freq.push(self.synth.mdct_windowed(&pre, n));
+            }
+            // The next frame predicts its energies from these: never let
+            // them exceed what was concealed, so a note that ended during
+            // the loss does not come back too loud. An error in the state
+            // decays by the inter-frame prediction coefficient per frame,
+            // slowly for short frames, so those keep a further margin.
+            let margin = PRED_COEF[lm] - 0.5;
+            for (ch, f) in freq.iter().enumerate() {
+                for i in start..end {
+                    let e: f32 = f[m * EBANDS[i]..m * EBANDS[i + 1]].iter().map(|v| v * v).sum();
+                    let lg = 0.5 * (e + 1e-15).log2() - E_MEANS[i] - margin;
+                    for row in self.old_band_e.iter_mut().skip(ch).step_by(self.channels) {
+                        row[i] = row[i].min(lg.max(-28.0));
+                    }
+                }
+            }
+            freq
+        };
+        self.synthesize(freq, n, 1, pf, out, accumulate);
         self.loss_count += 1;
-        let t = self.last_pitch.max(COMB_MIN_PERIOD);
-        let att0 = 0.8f32.powi(self.loss_count as i32 - 1);
-        let att1 = 0.8f32.powi(self.loss_count as i32);
-        let frame_att = if self.loss_count > 5 { 0.0 } else { 1.0 };
-        let l = OVERLAP;
-        for ch in 0..cc {
-            let mem = &self.decode_mem[ch];
-            // Periodic extension of the final output.
-            let mut e = vec![0.0f32; n + l];
-            for (k, v) in e.iter_mut().enumerate() {
-                let src = DECODE_BUFFER - t + (k % t);
-                let g = att0 + (att1 - att0) * (k as f32 / (n + l) as f32);
-                *v = mem[src.min(DECODE_BUFFER - 1)] * g * frame_att;
-            }
-            // Into the MDCT domain and back so the overlap stays consistent.
-            let coefs = self.synth.mdct_windowed(&e, n);
-            let mem = &mut self.decode_mem[ch];
-            mem.copy_within(n.., 0);
-            let o = &mut mem[DECODE_BUFFER - n..];
-            self.synth.imdct_ola(&coefs, o, n, 1);
-        }
-        // The extension is already filtered: no post-filter this frame.
-        self.postfilter_gain = 0.0;
-        self.postfilter_gain_old = 0.0;
-        for e in self.old_band_e.iter_mut() {
-            *e = (*e - 0.5).max(-28.0);
-        }
-        self.deemphasis(n, out, accumulate);
     }
 
-    /// A pitch period of the recent output, by normalized autocorrelation.
-    fn find_pitch(&self) -> usize {
-        let w = 480;
-        let mono: Vec<f32> = (0..DECODE_BUFFER)
-            .map(|i| self.decode_mem.iter().map(|m| m[i]).sum::<f32>() / self.channels as f32)
-            .collect();
-        let tail = &mono[DECODE_BUFFER - w..];
-        let mut best = (0.0f32, 240usize);
-        for t in 30..=720 {
-            let past = &mono[DECODE_BUFFER - w - t..DECODE_BUFFER - t];
-            let xy: f32 = tail.iter().zip(past).map(|(a, b)| a * b).sum();
-            let yy: f32 = past.iter().map(|b| b * b).sum::<f32>() + 1e-9;
-            let score = if xy > 0.0 { xy * xy / yy } else { 0.0 };
-            if score > best.0 {
-                best = (score, t);
+    /// The pitch lag of the recent output (normalised cross-correlation of
+    /// the last [`PLC_WINDOW`] samples with the past, channels summed) and
+    /// its correlation.
+    fn pitch_lag(&self) -> (usize, f32) {
+        let mono: Vec<f32> = (0..HISTORY).map(|k| self.history[..self.channels].iter().map(|h| h[k]).sum()).collect();
+        let seg = &mono[HISTORY - PLC_WINDOW..];
+        let e_seg: f32 = seg.iter().map(|v| v * v).sum();
+        let mut best = (PLC_MAX_LAG, 0.0f32);
+        if e_seg <= 1e-9 {
+            return best;
+        }
+        for lag in PLC_MIN_LAG..=PLC_MAX_LAG {
+            let past = &mono[HISTORY - PLC_WINDOW - lag..HISTORY - lag];
+            let (mut xy, mut yy) = (0.0f32, 0.0f32);
+            for (a, b) in seg.iter().zip(past) {
+                xy += a * b;
+                yy += b * b;
+            }
+            let r = xy / (e_seg * yy).sqrt().max(1e-9);
+            if r > best.1 {
+                best = (lag, r);
             }
         }
-        best.1
+        best
     }
 }
 
-const COMB_MIN_PERIOD: usize = 15;
-
-/// §4.3.7.1: the comb post-filter, in place on `buf[base .. base + n]`,
-/// cross-fading from `(t0, g0, tapset0)` to `(t1, g1, tapset1)` over the
-/// overlap.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn comb_filter(
-    buf: &mut [f32],
-    base: usize,
-    t0: usize,
-    t1: usize,
-    n: usize,
-    g0: f32,
-    g1: f32,
-    tapset0: usize,
-    tapset1: usize,
-    window: &[f32],
-) {
-    if g0 == 0.0 && g1 == 0.0 {
-        return;
-    }
-    let t0 = t0.max(COMB_MIN_PERIOD);
-    let t1 = t1.max(COMB_MIN_PERIOD);
-    let g00 = g0 * POSTFILTER_TAPS[tapset0][0];
-    let g01 = g0 * POSTFILTER_TAPS[tapset0][1];
-    let g02 = g0 * POSTFILTER_TAPS[tapset0][2];
-    let g10 = g1 * POSTFILTER_TAPS[tapset1][0];
-    let g11 = g1 * POSTFILTER_TAPS[tapset1][1];
-    let g12 = g1 * POSTFILTER_TAPS[tapset1][2];
-    let mut overlap = OVERLAP.min(n);
-    if g0 == g1 && t0 == t1 && tapset0 == tapset1 {
-        overlap = 0;
-    }
-    let mut x1 = buf[base - t1 + 1];
-    let mut x2 = buf[base - t1];
-    let mut x3 = buf[base - t1 - 1];
-    let mut x4 = buf[base - t1 - 2];
-    for i in 0..overlap {
-        let p = base + i;
-        let x0 = buf[p - t1 + 2];
-        let f = window[i] * window[i];
-        let v = buf[p]
-            + (1.0 - f) * g00 * buf[p - t0]
-            + (1.0 - f) * g01 * (buf[p - t0 + 1] + buf[p - t0 - 1])
-            + (1.0 - f) * g02 * (buf[p - t0 + 2] + buf[p - t0 - 2])
-            + f * g10 * x2
-            + f * g11 * (x1 + x3)
-            + f * g12 * (x0 + x4);
-        buf[p] = v;
-        x4 = x3;
-        x3 = x2;
-        x2 = x1;
-        x1 = x0;
-    }
-    if g1 == 0.0 {
-        return;
-    }
-    for i in overlap..n {
-        let p = base + i;
-        let v = buf[p]
-            + g10 * buf[p - t1]
-            + g11 * (buf[p - t1 + 1] + buf[p - t1 - 1])
-            + g12 * (buf[p - t1 + 2] + buf[p - t1 - 2]);
-        buf[p] = v;
+/// LM of a frame of `n` samples at 48 kHz (CELT_SPEC §1.1).
+fn lm_of(n: usize) -> usize {
+    match n {
+        120 => 0,
+        240 => 1,
+        480 => 2,
+        _ => 3,
     }
 }
 
-/// §4.3.1 / §4.3.4.5: the per-band TF changes.
-pub(crate) fn tf_decode(
-    ec: &mut RangeDecoder,
-    start: usize,
-    end: usize,
-    transient: bool,
-    lm: usize,
-    total_bits: i32,
-) -> [i32; NB_EBANDS] {
-    let mut tf_res = [0i32; NB_EBANDS];
-    let mut budget = total_bits;
-    let mut tell = ec.tell();
-    let mut logp = if transient { 2 } else { 4 };
-    let tf_select_rsv = lm > 0 && tell + logp < budget;
-    budget -= i32::from(tf_select_rsv);
-    let mut tf_changed = 0;
-    let mut curr = 0;
-    for r in tf_res.iter_mut().take(end).skip(start) {
-        if tell + logp <= budget {
-            curr ^= i32::from(ec.bit_logp(logp as u32));
-            tell = ec.tell();
-            tf_changed |= curr;
+/// The post-filter comb of CELT_SPEC §10.5, in place on `len` samples of
+/// `h` from `base`, cross-fading over the first `ov` samples from `from`
+/// to `to`.
+fn comb_filter(h: &mut [f32], base: usize, len: usize, from: PostFilter, to: PostFilter, ov: usize) {
+    let window = &mode().window;
+    let a = COMB_FILTER_GAINS[from.tapset].map(|g| from.gain * g);
+    let b = COMB_FILTER_GAINS[to.tapset].map(|g| to.gain * g);
+    let (t0, t1) = (from.period, to.period);
+    for i in 0..len {
+        let k = base + i;
+        let mut acc = h[k];
+        let f = if i < ov { window[i] * window[i] } else { 1.0 };
+        if i < ov && from.gain != 0.0 {
+            let w = 1.0 - f;
+            acc += (w * a[0]) * h[k - t0] + (w * a[1]) * (h[k - t0 - 1] + h[k - t0 + 1]) + (w * a[2]) * (h[k - t0 - 2] + h[k - t0 + 2]);
         }
-        *r = curr;
-        logp = if transient { 4 } else { 5 };
+        if to.gain != 0.0 {
+            acc += (f * b[0]) * h[k - t1] + (f * b[1]) * (h[k - t1 - 1] + h[k - t1 + 1]) + (f * b[2]) * (h[k - t1 - 2] + h[k - t1 + 2]);
+        }
+        h[k] = acc;
     }
-    let ti = 4 * usize::from(transient);
-    let mut tf_select = 0;
-    if tf_select_rsv && TF_SELECT[lm][ti + tf_changed as usize] != TF_SELECT[lm][ti + 2 + tf_changed as usize] {
-        tf_select = usize::from(ec.bit_logp(1));
-    }
-    for r in tf_res.iter_mut().take(end).skip(start) {
-        *r = i32::from(TF_SELECT[lm][ti + 2 * tf_select + *r as usize]);
-    }
-    tf_res
 }

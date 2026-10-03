@@ -8,9 +8,8 @@
 //! for steady frames, short-block resolution for transients.
 
 use super::Synth;
-use super::bands::{self, FrameParams, SPREAD_AGGRESSIVE, SPREAD_LIGHT, SPREAD_NONE, SPREAD_NORMAL};
-use super::energy;
-use super::mode::{BITRES, init_caps};
+use super::bands::{self, FrameBands, SPREAD_AGGRESSIVE, SPREAD_LIGHT, SPREAD_NONE, SPREAD_NORMAL};
+use super::energy::{self, BandEnergies};
 use super::rate::{self, EncoderChoices};
 use super::tables::*;
 use crate::range::RangeEncoder;
@@ -21,9 +20,9 @@ pub struct CeltEncoder {
     /// Pre-emphasized input of the last `OVERLAP` samples, per channel.
     in_mem: Vec<Vec<f32>>,
     preemph_mem: [f32; 2],
-    old_band_e: [f32; 2 * NB_EBANDS],
-    old_log_e: [f32; 2 * NB_EBANDS],
-    old_log_e2: [f32; 2 * NB_EBANDS],
+    old_band_e: BandEnergies,
+    old_log_e: BandEnergies,
+    old_log_e2: BandEnergies,
     prev_coded: usize,
     force_intra: bool,
     /// Energy of the last frame's sub-blocks, for transient detection.
@@ -50,9 +49,9 @@ impl CeltEncoder {
             channels,
             in_mem: vec![vec![0.0; OVERLAP]; channels],
             preemph_mem: [0.0; 2],
-            old_band_e: [0.0; 2 * NB_EBANDS],
-            old_log_e: [-28.0; 2 * NB_EBANDS],
-            old_log_e2: [-28.0; 2 * NB_EBANDS],
+            old_band_e: [[0.0; NB_EBANDS]; 2],
+            old_log_e: [[-28.0; NB_EBANDS]; 2],
+            old_log_e2: [[-28.0; NB_EBANDS]; 2],
             prev_coded: NB_EBANDS,
             force_intra: true,
             last_block_energy: 0.0,
@@ -69,6 +68,10 @@ impl CeltEncoder {
     /// Encodes one frame of `n` samples per channel (interleaved, ±1.0) into
     /// `enc`, whose whole frame size bounds the bits used. Returns whether
     /// the frame was coded as silence.
+    ///
+    /// The symbol order and every gate follow the decoder (CELT_SPEC §1.2,
+    /// §12); the procedures shared with the decoder (energy, allocation,
+    /// TF, band shapes) code everything the decoder parses.
     pub fn encode(&mut self, pcm: &[f32], n: usize, enc: &mut RangeEncoder, cfg: FrameConfig) -> bool {
         let c = self.channels;
         let lm = match n {
@@ -89,7 +92,7 @@ impl CeltEncoder {
             for i in 0..n {
                 let s = pcm[i * c + ch] * 32768.0;
                 peak = peak.max(s.abs());
-                b.push(s - DEEMPHASIS * m);
+                b.push(s - PREEMPH_COEF * m);
                 m = s;
             }
             self.preemph_mem[ch] = m;
@@ -98,7 +101,7 @@ impl CeltEncoder {
         }
         if c == 1 {
             for i in 0..NB_EBANDS {
-                self.old_band_e[i] = self.old_band_e[i].max(self.old_band_e[NB_EBANDS + i]);
+                self.old_band_e[0][i] = self.old_band_e[0][i].max(self.old_band_e[1][i]);
             }
         }
         let mut tell = enc.tell();
@@ -110,7 +113,7 @@ impl CeltEncoder {
         }
         let silence = silence && tell == 1;
         if silence {
-            self.old_band_e = [-28.0; 2 * NB_EBANDS];
+            self.old_band_e = [[-28.0; NB_EBANDS]; 2];
             self.finish_frame(c, start, end, false);
             // The decoder needs the history of a silent frame too.
             self.last_block_energy = 0.0;
@@ -133,14 +136,14 @@ impl CeltEncoder {
         let blocks = if transient { mm } else { 1 };
         let coefs: Vec<Vec<f32>> = x.iter().map(|xc| self.synth.mdct_blocks(xc, n, blocks)).collect();
         // Band energies.
-        let mut band_amp = [0.0f32; 2 * NB_EBANDS];
-        let mut log_e = [0.0f32; 2 * NB_EBANDS];
+        let mut band_amp: BandEnergies = [[0.0; NB_EBANDS]; 2];
+        let mut log_e: BandEnergies = [[0.0; NB_EBANDS]; 2];
         for ch in 0..c {
             for i in 0..end {
                 let e: f32 = coefs[ch][mm * EBANDS[i]..mm * EBANDS[i + 1]].iter().map(|v| v * v).sum::<f32>();
                 let a = (e + 1e-27).sqrt();
-                band_amp[ch * NB_EBANDS + i] = a;
-                log_e[ch * NB_EBANDS + i] = a.log2() - E_MEANS[i];
+                band_amp[ch][i] = a;
+                log_e[ch][i] = a.log2() - E_MEANS[i];
             }
         }
         // Intra (no time prediction) for the first frame or on a big
@@ -148,7 +151,7 @@ impl CeltEncoder {
         let mut dist = 0.0f32;
         for ch in 0..c {
             for i in start..end {
-                let d = log_e[ch * NB_EBANDS + i] - self.old_band_e[ch * NB_EBANDS + i];
+                let d = log_e[ch][i] - self.old_band_e[ch][i];
                 dist += d * d;
             }
         }
@@ -159,20 +162,21 @@ impl CeltEncoder {
         } else {
             false
         };
-        let mut err = [0.0f32; 2 * NB_EBANDS];
-        energy::quant_coarse(enc, &log_e, &mut self.old_band_e, &mut err, start, end, intra, c, lm, total_bits);
-        // TF resolution.
+        let mut err: BandEnergies = [[0.0; NB_EBANDS]; 2];
+        energy::code_coarse(enc, total_bits, &mut self.old_band_e, &log_e, &mut err, start, end, intra, c, lm);
+        // TF resolution: transients keep their short-block resolution,
+        // steady frames their long-block one.
         let mut tf_choice = [0i32; NB_EBANDS];
         if transient {
             tf_choice[start..end].fill(1);
         }
-        let tf_res = tf_encode(enc, start, end, transient, &mut tf_choice, lm, total_bits);
+        let tf_res = bands::code_tf(enc, start, end, transient, lm, total_bits, &tf_choice, false);
         tell = enc.tell();
         // Spreading.
         let mut xn: Vec<Vec<f32>> = coefs.clone();
         for ch in 0..c {
             for i in 0..NB_EBANDS {
-                let a = band_amp[ch * NB_EBANDS + i];
+                let a = band_amp[ch][i];
                 for v in &mut xn[ch][mm * EBANDS[i]..mm * EBANDS[i + 1]] {
                     if i < end {
                         *v /= a;
@@ -189,49 +193,30 @@ impl CeltEncoder {
         if tell + 4 <= total_bits {
             enc.icdf(spread as usize, &SPREAD_ICDF, 5);
         }
-        // Band boosts (§5.3.4.1).
-        let cap = init_caps(lm, c);
+        // Band boosts (§5.3.4.1), only when the frame has room for them.
+        let cap = rate::init_caps(lm, c);
+        let rich = total_bits > (n as i32 / 4) * c as i32;
         let mut want_boost = [0i32; NB_EBANDS];
         let (t1, t2) = if lm >= 1 { (2.0, 4.0) } else { (3.0, 5.0) };
         for i in start + 1..end.saturating_sub(1) {
             let mut d = 0.0f32;
             for ch in 0..c {
-                let e = |j: usize| log_e[ch * NB_EBANDS + j] + E_MEANS[j];
+                let e = |j: usize| log_e[ch][j] + E_MEANS[j];
                 d = d.max(2.0 * e(i) - e(i - 1) - e(i + 1));
             }
-            want_boost[i] = if d > t2 { 2 } else if d > t1 { 1 } else { 0 };
+            want_boost[i] = if !rich {
+                0
+            } else if d > t2 {
+                2
+            } else if d > t1 {
+                1
+            } else {
+                0
+            };
         }
-        let mut offsets = [0i32; NB_EBANDS];
-        let mut dynalloc_logp = 6u32;
-        let mut total_bits8 = total_bits << BITRES;
-        let mut tell8 = enc.tell_frac();
-        // Only boost when the frame has room for it.
-        let rich = total_bits > (n as i32 / 4) * c as i32;
-        for i in start..end {
-            let width = (c * (EBANDS[i + 1] - EBANDS[i]) << lm) as i32;
-            let quanta = (width << BITRES).min((6 << BITRES).max(width));
-            let mut loop_logp = dynalloc_logp;
-            let mut boost = 0;
-            let mut j = 0;
-            while tell8 + ((loop_logp as i32) << BITRES) < total_bits8 && boost < cap[i] {
-                let flag = rich && j < want_boost[i];
-                enc.bit_logp(flag, loop_logp);
-                tell8 = enc.tell_frac();
-                if !flag {
-                    break;
-                }
-                boost += quanta;
-                total_bits8 -= quanta;
-                loop_logp = 1;
-                j += 1;
-            }
-            offsets[i] = boost;
-            if boost > 0 {
-                dynalloc_logp = 2.max(dynalloc_logp - 1);
-            }
-        }
+        let (offsets, boosted_total) = rate::code_boosts(enc, start, end, c, lm, &cap, &want_boost, enc.storage());
         // Allocation trim (§5.3.4.2).
-        let trim = if tell8 + (6 << BITRES) <= total_bits8 {
+        let trim = if enc.tell_frac() + (6 << BITRES) <= boosted_total {
             let t = alloc_trim(&log_e, &xn, start, end, c, mm);
             enc.icdf(t as usize, &TRIM_ICDF, 7);
             t
@@ -259,33 +244,34 @@ impl CeltEncoder {
         } else {
             (0, false)
         };
-        let choices = EncoderChoices { intensity, dual_stereo: dual, prev_coded: self.prev_coded, signal_bandwidth: end - 1 };
-        let alloc = rate::compute_allocation(start, end, &offsets, &cap, trim, bits, c, lm, enc, choices);
+        let choices = EncoderChoices { intensity, dual_stereo: dual, prev_coded: self.prev_coded };
+        let alloc = rate::compute_allocation(enc, start, end, &offsets, &cap, trim, bits, c, lm, choices);
         energy::code_fine(enc, &mut self.old_band_e, &mut err, &alloc.fine_quant, start, end, c);
-        let mut xs = xn[0].clone();
-        let mut ys = if c == 2 { xn[1].clone() } else { Vec::new() };
-        let params = FrameParams {
+        let mut xs = std::mem::take(&mut xn[0]);
+        let mut ys = if c == 2 { std::mem::take(&mut xn[1]) } else { Vec::new() };
+        let params = FrameBands {
             start,
             end,
             lm,
-            short_blocks: blocks,
+            blocks,
             spread,
             dual_stereo: alloc.dual_stereo,
             intensity: alloc.intensity,
             tf_res: &tf_res,
-            total_bits: (total_bits << BITRES) - anti_collapse_rsv,
+            shape_total: (total_bits << BITRES) - anti_collapse_rsv,
             balance: alloc.balance,
             pulses: &alloc.pulses,
             coded_bands: alloc.coded_bands,
             disable_inv: false,
-            resynth: false,
         };
-        bands::quant_all_bands(enc, &params, &mut xs, &mut ys, &band_amp, 0);
+        let mut seed = 0;
+        bands::quant_all_bands(enc, &params, &mut xs, if c == 2 { Some(ys.as_mut_slice()) } else { None }, &band_amp, &mut seed);
         if anti_collapse_rsv > 0 {
-            enc.bits(u32::from(transient), 1);
+            // Let the decoder fill short blocks that got no pulses.
+            enc.bits(1, 1);
         }
         let left = total_bits - enc.tell();
-        energy::code_finalise(enc, &mut self.old_band_e, &mut err, &alloc.fine_quant, &alloc.fine_priority, left, start, end, c);
+        energy::code_final(enc, &mut self.old_band_e, &mut err, &alloc.fine_quant, &alloc.fine_priority, left, start, end, c);
         self.prev_coded = alloc.coded_bands;
         self.finish_frame(c, start, end, transient);
         false
@@ -294,22 +280,23 @@ impl CeltEncoder {
     /// The decoder's end-of-frame energy bookkeeping, mirrored.
     fn finish_frame(&mut self, c: usize, start: usize, end: usize, transient: bool) {
         if c == 1 {
-            let (a, b) = self.old_band_e.split_at_mut(NB_EBANDS);
-            b.copy_from_slice(a);
+            self.old_band_e[1] = self.old_band_e[0];
         }
         if !transient {
             self.old_log_e2 = self.old_log_e;
             self.old_log_e = self.old_band_e;
         } else {
-            for i in 0..2 * NB_EBANDS {
-                self.old_log_e[i] = self.old_log_e[i].min(self.old_band_e[i]);
+            for ch in 0..2 {
+                for i in 0..NB_EBANDS {
+                    self.old_log_e[ch][i] = self.old_log_e[ch][i].min(self.old_band_e[ch][i]);
+                }
             }
         }
         for ch in 0..2 {
             for i in (0..start).chain(end..NB_EBANDS) {
-                self.old_band_e[ch * NB_EBANDS + i] = 0.0;
-                self.old_log_e[ch * NB_EBANDS + i] = -28.0;
-                self.old_log_e2[ch * NB_EBANDS + i] = -28.0;
+                self.old_band_e[ch][i] = 0.0;
+                self.old_log_e[ch][i] = -28.0;
+                self.old_log_e2[ch][i] = -28.0;
             }
         }
         self.force_intra = false;
@@ -344,45 +331,6 @@ impl CeltEncoder {
         self.last_block_energy = *energies.last().unwrap_or(&0.0);
         transient
     }
-}
-
-/// §4.3.1 encoder side; returns the TF changes the decoder will derive.
-fn tf_encode(
-    enc: &mut RangeEncoder,
-    start: usize,
-    end: usize,
-    transient: bool,
-    choice: &mut [i32; NB_EBANDS],
-    lm: usize,
-    total_bits: i32,
-) -> [i32; NB_EBANDS] {
-    let mut budget = total_bits;
-    let mut tell = enc.tell();
-    let mut logp = if transient { 2 } else { 4 };
-    let tf_select_rsv = lm > 0 && tell + logp < budget;
-    budget -= i32::from(tf_select_rsv);
-    let mut curr = 0;
-    let mut tf_changed = 0;
-    for r in choice.iter_mut().take(end).skip(start) {
-        if tell + logp <= budget {
-            enc.bit_logp((*r ^ curr) != 0, logp as u32);
-            tell = enc.tell();
-            curr = *r;
-            tf_changed |= curr;
-        } else {
-            *r = curr;
-        }
-        logp = if transient { 4 } else { 5 };
-    }
-    let ti = 4 * usize::from(transient);
-    if tf_select_rsv && TF_SELECT[lm][ti + tf_changed as usize] != TF_SELECT[lm][ti + 2 + tf_changed as usize] {
-        enc.bit_logp(false, 1);
-    }
-    let mut res = [0i32; NB_EBANDS];
-    for i in start..end {
-        res[i] = i32::from(TF_SELECT[lm][ti + choice[i] as usize]);
-    }
-    res
 }
 
 /// §5.3.7: how tonal the normalized spectrum is decides the spreading.
@@ -435,7 +383,7 @@ fn spreading_decision(x: &[Vec<f32>], start: usize, end: usize, mm: usize, trans
 
 /// §5.3.4.2: the allocation trim from the spectral tilt and, for stereo,
 /// the inter-channel correlation at low frequencies.
-fn alloc_trim(log_e: &[f32], x: &[Vec<f32>], start: usize, end: usize, c: usize, mm: usize) -> i32 {
+fn alloc_trim(log_e: &BandEnergies, x: &[Vec<f32>], start: usize, end: usize, c: usize, mm: usize) -> i32 {
     let mut trim = 5.0f32;
     if c == 2 {
         let mut corr = 0.0f32;
@@ -453,7 +401,7 @@ fn alloc_trim(log_e: &[f32], x: &[Vec<f32>], start: usize, end: usize, c: usize,
     let span = (end - start).max(2) as f32;
     for ch in 0..c {
         for i in start..end.saturating_sub(1) {
-            diff += (log_e[ch * NB_EBANDS + i] + E_MEANS[i]) * (2.0 + 2.0 * (i - start) as f32 - span);
+            diff += (log_e[ch][i] + E_MEANS[i]) * (2.0 + 2.0 * (i - start) as f32 - span);
         }
     }
     diff /= c as f32 * (span - 1.0).max(1.0) * span;
