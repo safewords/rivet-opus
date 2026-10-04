@@ -73,7 +73,12 @@ mod x86 {
         let mut i = 0;
         while i < n {
             // SAFETY: i + 8 <= n <= a.len() <= b.len().
-            let (x, y) = unsafe { (_mm256_loadu_ps(a.as_ptr().add(i)), _mm256_loadu_ps(b.as_ptr().add(i))) };
+            let (x, y) = unsafe {
+                (
+                    _mm256_loadu_ps(a.as_ptr().add(i)),
+                    _mm256_loadu_ps(b.as_ptr().add(i)),
+                )
+            };
             acc = _mm256_add_ps(acc, _mm256_mul_ps(x, y));
             i += LANES;
         }
@@ -145,11 +150,22 @@ mod tests {
         for len in 0..200 {
             let a = noise(len, len as u32 + 1);
             let b = noise(len + 3, len as u32 + 1000);
-            assert_eq!(dot(&a, &b).to_bits(), dot_scalar(&a, &b).to_bits(), "len {len}");
+            assert_eq!(
+                dot(&a, &b).to_bits(),
+                dot_scalar(&a, &b).to_bits(),
+                "len {len}"
+            );
         }
-        let big: Vec<f32> = (0..37).map(|i| if i % 3 == 0 { 3.0e38 } else { -1.0e-38 }).collect();
+        let big: Vec<f32> = (0..37)
+            .map(|i| if i % 3 == 0 { 3.0e38 } else { -1.0e-38 })
+            .collect();
         assert_eq!(dot(&big, &big).to_bits(), dot_scalar(&big, &big).to_bits());
-        let mixed: Vec<f32> = (0..64).map(|i| [1.0e20, -1.0e20, 1.0, f32::MIN_POSITIVE][i % 4]).collect();
-        assert_eq!(dot(&mixed[1..], &mixed).to_bits(), dot_scalar(&mixed[1..], &mixed).to_bits());
+        let mixed: Vec<f32> = (0..64)
+            .map(|i| [1.0e20, -1.0e20, 1.0, f32::MIN_POSITIVE][i % 4])
+            .collect();
+        assert_eq!(
+            dot(&mixed[1..], &mixed).to_bits(),
+            dot_scalar(&mixed[1..], &mixed).to_bits()
+        );
     }
 }

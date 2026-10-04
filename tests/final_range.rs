@@ -23,7 +23,8 @@ fn panned(channels: usize, seconds: f32) -> Vec<f32> {
     let mut out = Vec::with_capacity(n * channels);
     for i in 0..n {
         let t = i as f32 / 48_000.0;
-        let s = 0.3 * (2.0 * PI * (300.0 + 2000.0 * (t * 0.25).fract()) * t).sin() + 0.02 * g.next_f32();
+        let s = 0.3 * (2.0 * PI * (300.0 + 2000.0 * (t * 0.25).fract()) * t).sin()
+            + 0.02 * g.next_f32();
         let phase = ((t * 2.0) as usize) % 3;
         let (l, r) = match phase {
             0 => (s, 0.0),
@@ -57,8 +58,11 @@ fn mismatches(cfg: EncoderConfig, pcm: &[f32]) -> Vec<(usize, u32, u32)> {
 fn check(mode: Mode, rates: &[u32], frames: &[usize]) {
     let mut failures = Vec::new();
     for channels in [1, 2] {
-        let signals: [(&str, Vec<f32>); 3] =
-            [("speech", speech(48_000, channels, 1.5)), ("music", music(48_000, channels, 1.5)), ("panned", panned(channels, 3.0))];
+        let signals: [(&str, Vec<f32>); 3] = [
+            ("speech", speech(48_000, channels, 1.5)),
+            ("music", music(48_000, channels, 1.5)),
+            ("panned", panned(channels, 3.0)),
+        ];
         for &frame in frames {
             for &rate in rates {
                 // VBR, CBR, and (SILK and hybrid) VBR with LBRR frames.
@@ -76,7 +80,11 @@ fn check(mode: Mode, rates: &[u32], frames: &[usize]) {
                             fec,
                             packet_loss_percent: if fec { 10 } else { 0 },
                             mode: Some(mode),
-                            application: if mode == Mode::Celt { Application::Audio } else { Application::Voip },
+                            application: if mode == Mode::Celt {
+                                Application::Audio
+                            } else {
+                                Application::Voip
+                            },
                             ..EncoderConfig::default()
                         };
                         let bad = mismatches(cfg, sig);
@@ -94,20 +102,38 @@ fn check(mode: Mode, rates: &[u32], frames: &[usize]) {
             }
         }
     }
-    assert!(failures.is_empty(), "final range differs:\n{}", failures.join("\n"));
+    assert!(
+        failures.is_empty(),
+        "final range differs:\n{}",
+        failures.join("\n")
+    );
 }
 
 #[test]
 fn silk_final_range_agrees() {
-    check(Mode::Silk, &[6_000, 10_000, 16_000, 24_000, 40_000], &[480, 960, 1920, 2880]);
+    check(
+        Mode::Silk,
+        &[6_000, 10_000, 16_000, 24_000, 40_000],
+        &[480, 960, 1920, 2880],
+    );
 }
 
 #[test]
 fn hybrid_final_range_agrees() {
-    check(Mode::Hybrid, &[16_000, 20_000, 24_000, 28_000, 32_000, 40_000, 48_000, 64_000], &[480, 960, 1920]);
+    check(
+        Mode::Hybrid,
+        &[
+            16_000, 20_000, 24_000, 28_000, 32_000, 40_000, 48_000, 64_000,
+        ],
+        &[480, 960, 1920],
+    );
 }
 
 #[test]
 fn celt_final_range_agrees() {
-    check(Mode::Celt, &[6_000, 16_000, 32_000, 64_000, 128_000, 256_000, 510_000], &[120, 240, 480, 960, 1920]);
+    check(
+        Mode::Celt,
+        &[6_000, 16_000, 32_000, 64_000, 128_000, 256_000, 510_000],
+        &[120, 240, 480, 960, 1920],
+    );
 }

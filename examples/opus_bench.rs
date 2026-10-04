@@ -37,7 +37,9 @@ fn main() {
     let only = args.get(3).cloned().unwrap_or_default();
 
     // Decode every vector at 48 kHz stereo.
-    let vectors: Vec<Vec<Vec<u8>>> = (1..=12).map(|i| read_bit(&dir.join(format!("testvector{i:02}.bit")))).collect();
+    let vectors: Vec<Vec<Vec<u8>>> = (1..=12)
+        .map(|i| read_bit(&dir.join(format!("testvector{i:02}.bit"))))
+        .collect();
     let mut audio = Vec::new();
     let mut samples = 0usize;
     let t = best(passes, || {
@@ -46,7 +48,11 @@ fn main() {
         for v in &vectors {
             let mut dec = opus::Decoder::new(48_000, 2).unwrap();
             for p in v {
-                let pcm = if p.is_empty() { dec.decode(None).unwrap() } else { dec.decode(Some(p)).unwrap() };
+                let pcm = if p.is_empty() {
+                    dec.decode(None).unwrap()
+                } else {
+                    dec.decode(Some(p)).unwrap()
+                };
                 samples += pcm.len() / 2;
                 audio.extend_from_slice(&pcm);
             }
@@ -57,23 +63,53 @@ fn main() {
     for v in &audio {
         hash = (hash ^ u64::from(v.to_bits())).wrapping_mul(0x100_0000_01b3);
     }
-    println!("decode  all vectors      {:8.1} x realtime ({secs:.1} s audio in {:.3} s, output hash {hash:016x})", secs / t, t);
+    println!(
+        "decode  all vectors      {:8.1} x realtime ({secs:.1} s audio in {:.3} s, output hash {hash:016x})",
+        secs / t,
+        t
+    );
 
     // Encode the first 60 s of the decoded audio.
     let n = audio.len().min(48_000 * 2 * 60);
     let audio = &audio[..n];
     let secs = n as f64 / 2.0 / 48_000.0;
     let modes: [(&str, Option<opus::Mode>, u32, opus::Application); 4] = [
-        ("celt 128k", Some(opus::Mode::Celt), 128_000, opus::Application::Audio),
-        ("celt 64k", Some(opus::Mode::Celt), 64_000, opus::Application::Audio),
-        ("hybrid 32k", Some(opus::Mode::Hybrid), 32_000, opus::Application::Voip),
-        ("silk 16k", Some(opus::Mode::Silk), 16_000, opus::Application::Voip),
+        (
+            "celt 128k",
+            Some(opus::Mode::Celt),
+            128_000,
+            opus::Application::Audio,
+        ),
+        (
+            "celt 64k",
+            Some(opus::Mode::Celt),
+            64_000,
+            opus::Application::Audio,
+        ),
+        (
+            "hybrid 32k",
+            Some(opus::Mode::Hybrid),
+            32_000,
+            opus::Application::Voip,
+        ),
+        (
+            "silk 16k",
+            Some(opus::Mode::Silk),
+            16_000,
+            opus::Application::Voip,
+        ),
     ];
     for (name, mode, bitrate, application) in modes {
         if !name.contains(only.as_str()) {
             continue;
         }
-        let cfg = opus::EncoderConfig { channels: 2, bitrate, mode, application, ..opus::EncoderConfig::default() };
+        let cfg = opus::EncoderConfig {
+            channels: 2,
+            bitrate,
+            mode,
+            application,
+            ..opus::EncoderConfig::default()
+        };
         let (mut bytes, mut hash) = (0usize, 0u64);
         let t = best(passes, || {
             let mut enc = opus::Encoder::new(cfg).unwrap();
@@ -88,6 +124,10 @@ fn main() {
                 }
             }
         });
-        println!("encode  {name:<16} {:8.1} x realtime ({:.0} kb/s, stream hash {hash:016x})", secs / t, bytes as f64 * 8.0 / secs / 1000.0);
+        println!(
+            "encode  {name:<16} {:8.1} x realtime ({:.0} kb/s, stream hash {hash:016x})",
+            secs / t,
+            bytes as f64 * 8.0 / secs / 1000.0
+        );
     }
 }

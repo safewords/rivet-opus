@@ -98,7 +98,16 @@ impl CeltDecoder {
     /// `c` channels over bands `start..end` (CELT_SPEC §1), writing (or
     /// with `accumulate`, adding) `n48 / downsample` interleaved samples per
     /// output channel to `out`.
-    pub fn decode(&mut self, ec: &mut RangeDecoder, n48: usize, c: usize, start: usize, end: usize, out: &mut [f32], accumulate: bool) {
+    pub fn decode(
+        &mut self,
+        ec: &mut RangeDecoder,
+        n48: usize,
+        c: usize,
+        start: usize,
+        end: usize,
+        out: &mut [f32],
+        accumulate: bool,
+    ) {
         let len = ec.storage();
         if len <= 1 {
             self.decode_lost(n48, out, accumulate);
@@ -130,27 +139,81 @@ impl CeltDecoder {
             let octave = ec.uint(6);
             let period = (16 << octave) + ec.bits(4 + octave) as usize - 1;
             let qg = ec.bits(3);
-            let tapset = if ec.tell() + 2 <= total_bits { ec.icdf(&TAPSET_ICDF, 2) } else { 0 };
-            pf_new = PostFilter { period, gain: 0.09375 * (qg + 1) as f32, tapset };
+            let tapset = if ec.tell() + 2 <= total_bits {
+                ec.icdf(&TAPSET_ICDF, 2)
+            } else {
+                0
+            };
+            pf_new = PostFilter {
+                period,
+                gain: 0.09375 * (qg + 1) as f32,
+                tapset,
+            };
         }
         let transient = lm > 0 && ec.tell() + 3 <= total_bits && ec.bit_logp(3);
         let intra = ec.tell() + 3 <= total_bits && ec.bit_logp(3);
         // §1.2 steps 5–10.
         let mut scratch = [[0.0f32; NB_EBANDS]; 2];
         let zeros = [[0.0f32; NB_EBANDS]; 2];
-        energy::code_coarse(ec, total_bits, &mut self.old_band_e, &zeros, &mut scratch, start, end, intra, c, lm);
-        let tf_res = bands::code_tf(ec, start, end, transient, lm, total_bits, &[0; NB_EBANDS], false);
-        let spread = if ec.tell() + 4 <= total_bits { ec.icdf(&SPREAD_ICDF, 5) as u32 } else { SPREAD_NORMAL };
+        energy::code_coarse(
+            ec,
+            total_bits,
+            &mut self.old_band_e,
+            &zeros,
+            &mut scratch,
+            start,
+            end,
+            intra,
+            c,
+            lm,
+        );
+        let tf_res = bands::code_tf(
+            ec,
+            start,
+            end,
+            transient,
+            lm,
+            total_bits,
+            &[0; NB_EBANDS],
+            false,
+        );
+        let spread = if ec.tell() + 4 <= total_bits {
+            ec.icdf(&SPREAD_ICDF, 5) as u32
+        } else {
+            SPREAD_NORMAL
+        };
         let cap = rate::init_caps(lm, c);
-        let (offsets, boosted_total) = rate::code_boosts(ec, start, end, c, lm, &cap, &[0; NB_EBANDS], len);
-        let trim = if ec.tell_frac() + (6 << BITRES) <= boosted_total { ec.icdf(&TRIM_ICDF, 7) as i32 } else { 5 };
+        let (offsets, boosted_total) =
+            rate::code_boosts(ec, start, end, c, lm, &cap, &[0; NB_EBANDS], len);
+        let trim = if ec.tell_frac() + (6 << BITRES) <= boosted_total {
+            ec.icdf(&TRIM_ICDF, 7) as i32
+        } else {
+            5
+        };
         let mut bits = ((len as i32 * 8) << BITRES) - ec.tell_frac() - 1;
-        let anti_collapse_rsv = if transient && lm >= 2 && bits >= (lm as i32 + 2) << BITRES { 1 << BITRES } else { 0 };
+        let anti_collapse_rsv = if transient && lm >= 2 && bits >= (lm as i32 + 2) << BITRES {
+            1 << BITRES
+        } else {
+            0
+        };
         bits -= anti_collapse_rsv;
-        let choices = EncoderChoices { intensity: 0, dual_stereo: false, prev_coded: 0 };
-        let alloc = rate::compute_allocation(ec, start, end, &offsets, &cap, trim, bits, c, lm, choices);
+        let choices = EncoderChoices {
+            intensity: 0,
+            dual_stereo: false,
+            prev_coded: 0,
+        };
+        let alloc =
+            rate::compute_allocation(ec, start, end, &offsets, &cap, trim, bits, c, lm, choices);
         // §1.2 steps 11–14.
-        energy::code_fine(ec, &mut self.old_band_e, &mut scratch, &alloc.fine_quant, start, end, c);
+        energy::code_fine(
+            ec,
+            &mut self.old_band_e,
+            &mut scratch,
+            &alloc.fine_quant,
+            start,
+            end,
+            c,
+        );
         let mut x = vec![0.0f32; n];
         let mut y = vec![0.0f32; if c == 2 { n } else { 0 }];
         let blocks = if transient { m } else { 1 };
@@ -170,10 +233,27 @@ impl CeltDecoder {
             disable_inv: self.disable_inv,
         };
         let mut seed = self.rng;
-        let collapse = bands::quant_all_bands(ec, &params, &mut x, if c == 2 { Some(y.as_mut_slice()) } else { None }, &zeros, &mut seed);
+        let collapse = bands::quant_all_bands(
+            ec,
+            &params,
+            &mut x,
+            if c == 2 { Some(y.as_mut_slice()) } else { None },
+            &zeros,
+            &mut seed,
+        );
         let anti_collapse_on = anti_collapse_rsv > 0 && ec.bits(1) == 1;
         let left = total_bits - ec.tell();
-        energy::code_final(ec, &mut self.old_band_e, &mut scratch, &alloc.fine_quant, &alloc.fine_priority, left, start, end, c);
+        energy::code_final(
+            ec,
+            &mut self.old_band_e,
+            &mut scratch,
+            &alloc.fine_quant,
+            &alloc.fine_priority,
+            left,
+            start,
+            end,
+            c,
+        );
         if anti_collapse_on {
             let mut chans: Vec<&mut [f32]> = vec![&mut x];
             if c == 2 {
@@ -205,7 +285,11 @@ impl CeltDecoder {
             }
             freq.push(f);
         }
-        let bound = if self.downsample == 1 { m * EBANDS[end] } else { (m * EBANDS[end]).min(n / self.downsample) };
+        let bound = if self.downsample == 1 {
+            m * EBANDS[end]
+        } else {
+            (m * EBANDS[end]).min(n / self.downsample)
+        };
         for f in &mut freq {
             f[bound.min(n)..].fill(0.0);
         }
@@ -219,7 +303,9 @@ impl CeltDecoder {
             self.old_log_e = self.old_band_e;
             for ch in 0..2 {
                 for i in 0..NB_EBANDS {
-                    self.background_log_e[ch][i] = (self.background_log_e[ch][i] + m as f32 * 0.001).min(self.old_band_e[ch][i]);
+                    self.background_log_e[ch][i] = (self.background_log_e[ch][i]
+                        + m as f32 * 0.001)
+                        .min(self.old_band_e[ch][i]);
                 }
             }
         } else {
@@ -244,7 +330,16 @@ impl CeltDecoder {
 
     /// Anti-collapse (CELT_SPEC §9): noise in the short blocks of
     /// transient bands that received no pulses.
-    fn anti_collapse(&self, chans: &mut [&mut [f32]], collapse: &CollapseMasks, lm: usize, start: usize, end: usize, pulses: &[i32; NB_EBANDS], mut seed: u32) {
+    fn anti_collapse(
+        &self,
+        chans: &mut [&mut [f32]],
+        collapse: &CollapseMasks,
+        lm: usize,
+        start: usize,
+        end: usize,
+        pulses: &[i32; NB_EBANDS],
+        mut seed: u32,
+    ) {
         let m = 1usize << lm;
         let c = chans.len();
         for i in start..end {
@@ -285,7 +380,15 @@ impl CeltDecoder {
     /// From coded-channel spectra to output samples (CELT_SPEC §10.3–§10.6):
     /// channel mapping, inverse MDCT with overlap-add, post-filter,
     /// de-emphasis and decimation. Updates the post-filter state.
-    fn synthesize(&mut self, mut freq: Vec<Vec<f32>>, n: usize, blocks: usize, pf_new: PostFilter, out: &mut [f32], accumulate: bool) {
+    fn synthesize(
+        &mut self,
+        mut freq: Vec<Vec<f32>>,
+        n: usize,
+        blocks: usize,
+        pf_new: PostFilter,
+        out: &mut [f32],
+        accumulate: bool,
+    ) {
         let cc = self.channels;
         if cc == 2 && freq.len() == 1 {
             freq.push(freq[0].clone());
@@ -386,14 +489,24 @@ impl CeltDecoder {
                 let mut cont = vec![0.0f32; total];
                 for j in 0..total {
                     let src = HISTORY as isize + j as isize - lag.0 as isize;
-                    cont[j] = if src < HISTORY as isize { h[src as usize] } else { cont[src as usize - HISTORY] };
+                    cont[j] = if src < HISTORY as isize {
+                        h[src as usize]
+                    } else {
+                        cont[src as usize - HISTORY]
+                    };
                 }
                 for (j, v) in cont.iter_mut().enumerate() {
                     *v *= fade.powf(((j + 1).min(n) as f32) / n as f32);
                 }
                 // …taken back before the post-filter, which synthesis
                 // applies again with the current parameters.
-                let at = |j: isize| if j < 0 { h[(HISTORY as isize + j) as usize] } else { cont[j as usize] };
+                let at = |j: isize| {
+                    if j < 0 {
+                        h[(HISTORY as isize + j) as usize]
+                    } else {
+                        cont[j as usize]
+                    }
+                };
                 let gains = COMB_FILTER_GAINS[pf.tapset];
                 let t = pf.period.max(MIN_PERIOD) as isize;
                 let mut pre = cont.clone();
@@ -401,7 +514,9 @@ impl CeltDecoder {
                     for (j, p) in pre.iter_mut().enumerate() {
                         let j = j as isize;
                         *p -= pf.gain
-                            * (gains[0] * at(j - t) + gains[1] * (at(j - t - 1) + at(j - t + 1)) + gains[2] * (at(j - t - 2) + at(j - t + 2)));
+                            * (gains[0] * at(j - t)
+                                + gains[1] * (at(j - t - 1) + at(j - t + 1))
+                                + gains[2] * (at(j - t - 2) + at(j - t + 2)));
                     }
                 }
                 freq.push(self.synth.mdct_windowed(&pre, n));
@@ -414,7 +529,10 @@ impl CeltDecoder {
             let margin = PRED_COEF[lm] - 0.5;
             for (ch, f) in freq.iter().enumerate() {
                 for i in start..end {
-                    let e: f32 = f[m * EBANDS[i]..m * EBANDS[i + 1]].iter().map(|v| v * v).sum();
+                    let e: f32 = f[m * EBANDS[i]..m * EBANDS[i + 1]]
+                        .iter()
+                        .map(|v| v * v)
+                        .sum();
                     let lg = 0.5 * (e + 1e-15).log2() - E_MEANS[i] - margin;
                     for row in self.old_band_e.iter_mut().skip(ch).step_by(self.channels) {
                         row[i] = row[i].min(lg.max(-28.0));
@@ -431,7 +549,9 @@ impl CeltDecoder {
     /// the last [`PLC_WINDOW`] samples with the past, channels summed) and
     /// its correlation.
     fn pitch_lag(&self) -> (usize, f32) {
-        let mono: Vec<f32> = (0..HISTORY).map(|k| self.history[..self.channels].iter().map(|h| h[k]).sum()).collect();
+        let mono: Vec<f32> = (0..HISTORY)
+            .map(|k| self.history[..self.channels].iter().map(|h| h[k]).sum())
+            .collect();
         let seg = &mono[HISTORY - PLC_WINDOW..];
         let e_seg: f32 = seg.iter().map(|v| v * v).sum();
         let mut best = (PLC_MAX_LAG, 0.0f32);
@@ -467,7 +587,14 @@ fn lm_of(n: usize) -> usize {
 /// The post-filter comb of CELT_SPEC §10.5, in place on `len` samples of
 /// `h` from `base`, cross-fading over the first `ov` samples from `from`
 /// to `to`.
-fn comb_filter(h: &mut [f32], base: usize, len: usize, from: PostFilter, to: PostFilter, ov: usize) {
+fn comb_filter(
+    h: &mut [f32],
+    base: usize,
+    len: usize,
+    from: PostFilter,
+    to: PostFilter,
+    ov: usize,
+) {
     let window = &mode().window;
     let a = COMB_FILTER_GAINS[from.tapset].map(|g| from.gain * g);
     let b = COMB_FILTER_GAINS[to.tapset].map(|g| to.gain * g);
@@ -478,10 +605,14 @@ fn comb_filter(h: &mut [f32], base: usize, len: usize, from: PostFilter, to: Pos
         let f = if i < ov { window[i] * window[i] } else { 1.0 };
         if i < ov && from.gain != 0.0 {
             let w = 1.0 - f;
-            acc += (w * a[0]) * h[k - t0] + (w * a[1]) * (h[k - t0 - 1] + h[k - t0 + 1]) + (w * a[2]) * (h[k - t0 - 2] + h[k - t0 + 2]);
+            acc += (w * a[0]) * h[k - t0]
+                + (w * a[1]) * (h[k - t0 - 1] + h[k - t0 + 1])
+                + (w * a[2]) * (h[k - t0 - 2] + h[k - t0 + 2]);
         }
         if to.gain != 0.0 {
-            acc += (f * b[0]) * h[k - t1] + (f * b[1]) * (h[k - t1 - 1] + h[k - t1 + 1]) + (f * b[2]) * (h[k - t1 - 2] + h[k - t1 + 2]);
+            acc += (f * b[0]) * h[k - t1]
+                + (f * b[1]) * (h[k - t1 - 1] + h[k - t1 + 1])
+                + (f * b[2]) * (h[k - t1 - 2] + h[k - t1 + 2]);
         }
         h[k] = acc;
     }

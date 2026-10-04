@@ -84,7 +84,11 @@ pub fn decode_indices(
     prev_lag: i32,
 ) -> FrameIndices {
     let mut ix = FrameIndices::default();
-    let ftype = if active { ec.icdf(&FRAME_TYPE_ACTIVE_ICDF, 8) + 2 } else { ec.icdf(&FRAME_TYPE_INACTIVE_ICDF, 8) };
+    let ftype = if active {
+        ec.icdf(&FRAME_TYPE_ACTIVE_ICDF, 8) + 2
+    } else {
+        ec.icdf(&FRAME_TYPE_INACTIVE_ICDF, 8)
+    };
     ix.signal_type = SignalType::from_index(ftype >> 1);
     ix.qoff = ftype & 1;
     for k in 0..nb_subfr {
@@ -108,7 +112,11 @@ pub fn decode_indices(
         }
         ix.nlsf_i2[k] = v;
     }
-    ix.interp_q2 = if nb_subfr == 4 { ec.icdf(&NLSF_INTERP_ICDF, 8) as i32 } else { 4 };
+    ix.interp_q2 = if nb_subfr == 4 {
+        ec.icdf(&NLSF_INTERP_ICDF, 8) as i32
+    } else {
+        4
+    };
     if ix.signal_type == SignalType::Voiced {
         let (scale, min_lag, _, low_icdf) = pitch_params(fs_khz);
         let mut absolute = true;
@@ -129,7 +137,11 @@ pub fn decode_indices(
         for k in 0..nb_subfr {
             ix.ltp[k] = ec.icdf(LTP_FILTER_ICDF[ix.periodicity], 8);
         }
-        ix.ltp_scale = if cond == CondCoding::Independent { ec.icdf(&LTP_SCALE_ICDF, 8) } else { 0 };
+        ix.ltp_scale = if cond == CondCoding::Independent {
+            ec.icdf(&LTP_SCALE_ICDF, 8)
+        } else {
+            0
+        };
     }
     ix.seed = ec.icdf(&SEED_ICDF, 8) as u32;
     ix
@@ -195,9 +207,17 @@ fn shell_decode(ec: &mut RangeDecoder, total: i32, out: &mut [i32]) {
 
 /// §4.2.7.8: the raw excitation (signed pulse magnitudes) of a frame of
 /// `frame_len` samples (a multiple of 16 is decoded).
-pub fn decode_pulses(ec: &mut RangeDecoder, signal_type: SignalType, qoff: usize, frame_len: usize) -> Vec<i32> {
+pub fn decode_pulses(
+    ec: &mut RangeDecoder,
+    signal_type: SignalType,
+    qoff: usize,
+    frame_len: usize,
+) -> Vec<i32> {
     let blocks = frame_len.div_ceil(16);
-    let rate_level = ec.icdf(&RATE_LEVEL_ICDF[usize::from(signal_type == SignalType::Voiced)], 8);
+    let rate_level = ec.icdf(
+        &RATE_LEVEL_ICDF[usize::from(signal_type == SignalType::Voiced)],
+        8,
+    );
     let mut counts = vec![0i32; blocks];
     let mut lsbs = vec![0usize; blocks];
     for b in 0..blocks {
@@ -237,7 +257,13 @@ pub fn decode_pulses(ec: &mut RangeDecoder, signal_type: SignalType, qoff: usize
 }
 
 /// §4.2.7.8.6: the excitation in Q23 from the raw pulses and the seed.
-pub fn excitation_q23(raw: &[i32], signal_type: SignalType, qoff: usize, seed: u32, len: usize) -> Vec<i32> {
+pub fn excitation_q23(
+    raw: &[i32],
+    signal_type: SignalType,
+    qoff: usize,
+    seed: u32,
+    len: usize,
+) -> Vec<i32> {
     let offset = QUANT_OFFSETS_Q23[signal_type as usize][qoff];
     let mut seed = seed;
     raw[..len]
@@ -335,7 +361,12 @@ impl ChannelState {
 
     /// Dequantizes the parameters of a decoded frame and advances the
     /// parameter state (§4.2.7.4–§4.2.7.6).
-    pub fn dequantize(&mut self, ix: &FrameIndices, nb_subfr: usize, cond: CondCoding) -> FrameParams {
+    pub fn dequantize(
+        &mut self,
+        ix: &FrameIndices,
+        nb_subfr: usize,
+        cond: CondCoding,
+    ) -> FrameParams {
         let mut gains_q16 = [0i32; 4];
         let mut prev = self.last_gain_index;
         for k in 0..nb_subfr {
@@ -352,7 +383,11 @@ impl ChannelState {
         let d = self.lpc_order;
         let mut n2 = nlsf::reconstruct(wb, ix.nlsf_i1, &ix.nlsf_i2);
         nlsf::stabilize(&mut n2[..d], wb);
-        let w_q2 = if self.first_frame_after_reset { 4 } else { ix.interp_q2 };
+        let w_q2 = if self.first_frame_after_reset {
+            4
+        } else {
+            ix.interp_q2
+        };
         let interp = nb_subfr == 4 && w_q2 < 4;
         let mut a_q12 = [[0i32; 16]; 2];
         let a2 = nlsf::nlsf_to_lpc(&n2[..d], wb);
@@ -421,7 +456,10 @@ impl ChannelState {
         let mut exc_all = vec![0.0f32; frame_len];
         for s in 0..nb_subfr {
             let j = s * n;
-            let a: Vec<f32> = p.a_q12[usize::from(!(s < 2 && p.interp))][..d].iter().map(|&v| v as f32 / 4096.0).collect();
+            let a: Vec<f32> = p.a_q12[usize::from(!(s < 2 && p.interp))][..d]
+                .iter()
+                .map(|&v| v as f32 / 4096.0)
+                .collect();
             let gain = p.gains_q16[s] as f32;
             let mut res = vec![0.0f32; n];
             if p.signal_type == SignalType::Voiced {
@@ -494,15 +532,21 @@ impl ChannelState {
                 }
             }
         }
-        self.out_hist.copy_from_slice(&out[frame_len..frame_len + h]);
-        self.lpc_hist.copy_from_slice(&lpc[frame_len..frame_len + 16]);
+        self.out_hist
+            .copy_from_slice(&out[frame_len..frame_len + h]);
+        self.lpc_hist
+            .copy_from_slice(&lpc[frame_len..frame_len + 16]);
         // Remember what the concealment needs.
         let a_last = &p.a_q12[1];
         for k in 0..16 {
             self.plc_a[k] = a_last[k] as f32 / 4096.0;
         }
         self.plc_voiced = p.signal_type == SignalType::Voiced;
-        self.plc_lag = if self.plc_voiced { p.pitch_lags[nb_subfr - 1] as usize } else { 0 };
+        self.plc_lag = if self.plc_voiced {
+            p.pitch_lags[nb_subfr - 1] as usize
+        } else {
+            0
+        };
         self.plc_exc = exc_all;
         self.plc_gain = 1.0;
         self.plc_count = 0;
@@ -522,7 +566,8 @@ impl ChannelState {
             self.out_hist.copy_within(n.min(OUT_HIST).., 0);
             return out;
         }
-        let energy: f32 = self.plc_exc.iter().map(|v| v * v).sum::<f32>() / self.plc_exc.len() as f32;
+        let energy: f32 =
+            self.plc_exc.iter().map(|v| v * v).sum::<f32>() / self.plc_exc.len() as f32;
         let rms = energy.sqrt();
         let lag = self.plc_lag.clamp(1, self.plc_exc.len());
         let hist = self.plc_exc.clone();
@@ -534,7 +579,10 @@ impl ChannelState {
             let v = if self.plc_voiced {
                 hist[hist.len() - lag + (i % lag)]
             } else {
-                self.plc_seed = self.plc_seed.wrapping_mul(196_314_165).wrapping_add(907_633_515);
+                self.plc_seed = self
+                    .plc_seed
+                    .wrapping_mul(196_314_165)
+                    .wrapping_add(907_633_515);
                 ((self.plc_seed >> 16) as f32 / 32768.0 - 1.0) * rms * 1.7
             };
             exc.push(v * g);
@@ -560,7 +608,8 @@ impl ChannelState {
         self.lpc_hist.copy_from_slice(&lpc[n..n + 16]);
         let mut full = self.out_hist.clone();
         full.extend_from_slice(&out);
-        self.out_hist.copy_from_slice(&full[full.len() - OUT_HIST..]);
+        self.out_hist
+            .copy_from_slice(&full[full.len() - OUT_HIST..]);
         // Keep the periodic part going for the next lost frame.
         let mut ex = self.plc_exc.clone();
         ex.extend_from_slice(&exc);
@@ -581,7 +630,13 @@ pub struct StereoState {
 
 impl StereoState {
     /// Converts one frame of mid/side to left/right with a one-sample delay.
-    pub fn unmix(&mut self, mid: &[f32], side: &[f32], w: [i32; 2], fs_khz: usize) -> (Vec<f32>, Vec<f32>) {
+    pub fn unmix(
+        &mut self,
+        mid: &[f32],
+        side: &[f32],
+        w: [i32; 2],
+        fs_khz: usize,
+    ) -> (Vec<f32>, Vec<f32>) {
         let n2 = mid.len();
         let n1 = 8 * fs_khz;
         let mut m = Vec::with_capacity(n2 + 2);
@@ -590,8 +645,14 @@ impl StereoState {
         let mut s = Vec::with_capacity(n2 + 1);
         s.push(self.side_hist);
         s.extend_from_slice(side);
-        let (pw0, pw1) = (self.prev_w[0] as f32 / 8192.0, self.prev_w[1] as f32 / 8192.0);
-        let (dw0, dw1) = ((w[0] - self.prev_w[0]) as f32 / (8192.0 * n1 as f32), (w[1] - self.prev_w[1]) as f32 / (8192.0 * n1 as f32));
+        let (pw0, pw1) = (
+            self.prev_w[0] as f32 / 8192.0,
+            self.prev_w[1] as f32 / 8192.0,
+        );
+        let (dw0, dw1) = (
+            (w[0] - self.prev_w[0]) as f32 / (8192.0 * n1 as f32),
+            (w[1] - self.prev_w[1]) as f32 / (8192.0 * n1 as f32),
+        );
         let mut left = vec![0.0f32; n2];
         let mut right = vec![0.0f32; n2];
         for i in 0..n2 {
@@ -616,7 +677,10 @@ impl StereoState {
         let mut out = Vec::with_capacity(n);
         out.push(self.mid_hist[1]);
         out.extend_from_slice(&mid[..n - 1]);
-        self.mid_hist = [if n >= 2 { mid[n - 2] } else { self.mid_hist[1] }, mid[n - 1]];
+        self.mid_hist = [
+            if n >= 2 { mid[n - 2] } else { self.mid_hist[1] },
+            mid[n - 1],
+        ];
         self.side_hist = 0.0;
         out
     }

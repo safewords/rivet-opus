@@ -67,7 +67,11 @@ pub struct Toc {
 impl Toc {
     /// Splits a TOC byte.
     pub fn from_byte(b: u8) -> Self {
-        Self { config: b >> 3, stereo: b & 4 != 0, code: b & 3 }
+        Self {
+            config: b >> 3,
+            stereo: b & 4 != 0,
+            code: b & 3,
+        }
     }
 
     /// The TOC byte.
@@ -260,7 +264,8 @@ pub fn parse(data: &[u8]) -> Result<Packet<'_>> {
             if vbr {
                 let mut lens = Vec::with_capacity(m);
                 for _ in 0..m - 1 {
-                    let (n, used) = frame_length(rest).map_err(|_| invalid("code 3 frame lengths [R7]"))?;
+                    let (n, used) =
+                        frame_length(rest).map_err(|_| invalid("code 3 frame lengths [R7]"))?;
                     rest = &rest[used..];
                     lens.push(n);
                 }
@@ -279,7 +284,9 @@ pub fn parse(data: &[u8]) -> Result<Packet<'_>> {
                 }
             } else {
                 if rest.len() % m != 0 {
-                    return Err(invalid("CBR code 3 payload not a multiple of the frame count [R6]"));
+                    return Err(invalid(
+                        "CBR code 3 payload not a multiple of the frame count [R6]",
+                    ));
                 }
                 let n = rest.len() / m;
                 if n > MAX_FRAME_BYTES {
@@ -291,7 +298,11 @@ pub fn parse(data: &[u8]) -> Result<Packet<'_>> {
             }
         }
     }
-    Ok(Packet { toc, frames, padding })
+    Ok(Packet {
+        toc,
+        frames,
+        padding,
+    })
 }
 
 /// Parses a self-delimited packet (RFC 6716 Appendix B) at the start of
@@ -337,7 +348,9 @@ pub fn parse_self_delimited(data: &[u8]) -> Result<(Packet<'_>, usize)> {
             frames.push(take(&mut pos, n2)?);
         }
         _ => {
-            let fc = *data.get(pos).ok_or_else(|| invalid("code 3 packet without a frame count [R6]"))?;
+            let fc = *data
+                .get(pos)
+                .ok_or_else(|| invalid("code 3 packet without a frame count [R6]"))?;
             pos += 1;
             let vbr = fc & 0x80 != 0;
             let m = usize::from(fc & 0x3F);
@@ -346,7 +359,9 @@ pub fn parse_self_delimited(data: &[u8]) -> Result<(Packet<'_>, usize)> {
             }
             if fc & 0x40 != 0 {
                 loop {
-                    let p = *data.get(pos).ok_or_else(|| invalid("padding length cut short [R6]"))?;
+                    let p = *data
+                        .get(pos)
+                        .ok_or_else(|| invalid("padding length cut short [R6]"))?;
                     pos += 1;
                     padding += if p == 255 { 254 } else { usize::from(p) };
                     if p != 255 {
@@ -376,7 +391,14 @@ pub fn parse_self_delimited(data: &[u8]) -> Result<(Packet<'_>, usize)> {
             pos += padding;
         }
     }
-    Ok((Packet { toc, frames, padding }, pos))
+    Ok((
+        Packet {
+            toc,
+            frames,
+            padding,
+        },
+        pos,
+    ))
 }
 
 /// Rewrites a regular packet in the self-delimited framing of RFC 6716
@@ -500,7 +522,8 @@ pub fn build(toc: Toc, frames: &[&[u8]], pad_to: Option<usize>) -> Result<Vec<u8
     }
     out.clear();
     out.push(Toc { code: 3, ..toc }.to_byte());
-    let fc = (u8::from(!all_equal) << 7) | (u8::from(!pad_header.is_empty()) << 6) | frames.len() as u8;
+    let fc =
+        (u8::from(!all_equal) << 7) | (u8::from(!pad_header.is_empty()) << 6) | frames.len() as u8;
     out.push(fc);
     out.extend_from_slice(&pad_header);
     out.extend_from_slice(&lengths);
@@ -518,14 +541,30 @@ mod tests {
     #[test]
     fn toc_table_2() {
         let t = Toc::from_byte(1 << 3);
-        assert_eq!((t.mode(), t.bandwidth(), t.frame_size()), (Mode::Silk, Bandwidth::Narrow, 960));
+        assert_eq!(
+            (t.mode(), t.bandwidth(), t.frame_size()),
+            (Mode::Silk, Bandwidth::Narrow, 960)
+        );
         let t = Toc::from_byte(29 << 3 | 1);
-        assert_eq!((t.mode(), t.bandwidth(), t.frame_size(), t.code), (Mode::Celt, Bandwidth::Full, 240, 1));
+        assert_eq!(
+            (t.mode(), t.bandwidth(), t.frame_size(), t.code),
+            (Mode::Celt, Bandwidth::Full, 240, 1)
+        );
         let t = Toc::from_byte(15 << 3);
-        assert_eq!((t.mode(), t.bandwidth(), t.frame_size()), (Mode::Hybrid, Bandwidth::Full, 960));
+        assert_eq!(
+            (t.mode(), t.bandwidth(), t.frame_size()),
+            (Mode::Hybrid, Bandwidth::Full, 960)
+        );
         for config in 0..32u8 {
-            let t = Toc { config, stereo: false, code: 0 };
-            assert_eq!(Toc::config_for(t.mode(), t.bandwidth(), t.frame_size()), Some(config));
+            let t = Toc {
+                config,
+                stereo: false,
+                code: 0,
+            };
+            assert_eq!(
+                Toc::config_for(t.mode(), t.bandwidth(), t.frame_size()),
+                Some(config)
+            );
         }
     }
 
@@ -555,10 +594,20 @@ mod tests {
 
     #[test]
     fn self_delimited_round_trip() {
-        let toc = Toc { config: 20, stereo: false, code: 0 };
+        let toc = Toc {
+            config: 20,
+            stereo: false,
+            code: 0,
+        };
         let a = [7u8; 300];
         let b = [9u8; 5];
-        for frames in [vec![&a[..]], vec![&a[..], &a[..]], vec![&a[..], &b[..]], vec![&b[..], &a[..], &b[..]], vec![&b[..], &b[..], &b[..]]] {
+        for frames in [
+            vec![&a[..]],
+            vec![&a[..], &a[..]],
+            vec![&a[..], &b[..]],
+            vec![&b[..], &a[..], &b[..]],
+            vec![&b[..], &b[..], &b[..]],
+        ] {
             let p = build(toc, &frames, Some(900)).unwrap();
             let sd = to_self_delimited(&p).unwrap();
             let mut joined = sd.clone();
@@ -571,7 +620,11 @@ mod tests {
 
     #[test]
     fn built_packets_parse_back() {
-        let toc = Toc { config: 31, stereo: true, code: 0 };
+        let toc = Toc {
+            config: 31,
+            stereo: true,
+            code: 0,
+        };
         let a = vec![1u8; 300];
         let b = vec![2u8; 17];
         let c = vec![3u8; 600];

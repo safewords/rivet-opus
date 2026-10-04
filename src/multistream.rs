@@ -58,8 +58,11 @@ pub fn family1_layout(channels: u8) -> Option<(u8, u8, &'static [u8])> {
 impl OpusHead {
     /// A head for `channels` with family 0 (1–2 channels) or 1 (3–8).
     pub fn new(channels: u8, pre_skip: u16, input_sample_rate: u32) -> Result<Self> {
-        let (streams, coupled, mapping) =
-            family1_layout(channels).ok_or_else(|| Error::Config(format!("{channels} channels: families 0 and 1 cover 1 to 8")))?;
+        let (streams, coupled, mapping) = family1_layout(channels).ok_or_else(|| {
+            Error::Config(format!(
+                "{channels} channels: families 0 and 1 cover 1 to 8"
+            ))
+        })?;
         Ok(Self {
             version: 1,
             channels,
@@ -111,7 +114,10 @@ impl OpusHead {
         }
         let need = 13 + usize::from(channels);
         if body.len() < need {
-            return Err(bad(format!("family {family} needs {need} bytes, has {}", body.len())));
+            return Err(bad(format!(
+                "family {family} needs {need} bytes, has {}",
+                body.len()
+            )));
         }
         let (streams, coupled) = (body[11], body[12]);
         if streams == 0 || coupled > streams || usize::from(streams) + usize::from(coupled) > 255 {
@@ -120,12 +126,24 @@ impl OpusHead {
         let mapping = body[13..need].to_vec();
         let decoded = streams + coupled;
         if let Some(&m) = mapping.iter().find(|&&m| m != 255 && m >= decoded) {
-            return Err(bad(format!("mapping index {m} with {decoded} decoded channels")));
+            return Err(bad(format!(
+                "mapping index {m} with {decoded} decoded channels"
+            )));
         }
         if family == 1 && channels > 8 {
             return Err(bad(format!("family 1 with {channels} channels")));
         }
-        Ok(Self { version, channels, pre_skip, input_sample_rate, output_gain, family, streams, coupled, mapping })
+        Ok(Self {
+            version,
+            channels,
+            pre_skip,
+            input_sample_rate,
+            output_gain,
+            family,
+            streams,
+            coupled,
+            mapping,
+        })
     }
 
     /// The header with the `OpusHead` magic (the Ogg packet).
@@ -172,16 +190,25 @@ impl MultistreamDecoder {
     /// one `mapping` entry per output channel.
     pub fn new(sample_rate: u32, streams: u8, coupled: u8, mapping: &[u8]) -> Result<Self> {
         if streams == 0 || coupled > streams {
-            return Err(Error::Config(format!("{streams} streams, {coupled} coupled")));
+            return Err(Error::Config(format!(
+                "{streams} streams, {coupled} coupled"
+            )));
         }
         let decoded = streams + coupled;
         if mapping.is_empty() || mapping.iter().any(|&m| m != 255 && m >= decoded) {
-            return Err(Error::Config("mapping refers to a channel that is not decoded".into()));
+            return Err(Error::Config(
+                "mapping refers to a channel that is not decoded".into(),
+            ));
         }
         let decoders = (0..streams)
             .map(|s| Decoder::new(sample_rate, if s < coupled { 2 } else { 1 }))
             .collect::<Result<Vec<_>>>()?;
-        Ok(Self { decoders, coupled: usize::from(coupled), mapping: mapping.to_vec(), gain: 1.0 })
+        Ok(Self {
+            decoders,
+            coupled: usize::from(coupled),
+            mapping: mapping.to_vec(),
+            gain: 1.0,
+        })
     }
 
     /// A decoder for the stream an `OpusHead` describes, applying its
@@ -252,7 +279,9 @@ impl MultistreamDecoder {
         let frames = outs[0].len() / self.decoders[0].channels();
         for (s, o) in outs.iter().enumerate() {
             if o.len() / self.decoders[s].channels() != frames {
-                return Err(Error::InvalidPacket("streams of different durations".into()));
+                return Err(Error::InvalidPacket(
+                    "streams of different durations".into(),
+                ));
             }
         }
         let c = self.mapping.len();
@@ -262,7 +291,11 @@ impl MultistreamDecoder {
                 continue;
             }
             let m = usize::from(m);
-            let (s, ch, nch) = if m < 2 * self.coupled { (m / 2, m % 2, 2) } else { (m - self.coupled, 0, 1) };
+            let (s, ch, nch) = if m < 2 * self.coupled {
+                (m / 2, m % 2, 2)
+            } else {
+                (m - self.coupled, 0, 1)
+            };
             for i in 0..frames {
                 out[i * c + oc] = outs[s][i * nch + ch] * self.gain;
             }
@@ -286,12 +319,18 @@ impl MultistreamEncoder {
     /// An encoder for `cfg.channels` (1–8) input channels in Vorbis order;
     /// `cfg.bitrate` is the total for all streams.
     pub fn new(cfg: EncoderConfig) -> Result<Self> {
-        let ch = u8::try_from(cfg.channels).map_err(|_| Error::Config("too many channels".into()))?;
-        let (streams, coupled, mapping) =
-            family1_layout(ch).ok_or_else(|| Error::Config(format!("{ch} channels: families 0 and 1 cover 1 to 8")))?;
+        let ch =
+            u8::try_from(cfg.channels).map_err(|_| Error::Config("too many channels".into()))?;
+        let (streams, coupled, mapping) = family1_layout(ch).ok_or_else(|| {
+            Error::Config(format!("{ch} channels: families 0 and 1 cover 1 to 8"))
+        })?;
         // Share the rate: a coupled stream counts 1.5, a mono one 1, the
         // LFE (the last channel of 5.1 and 7.1) 0.25.
-        let lfe = if ch == 6 || ch == 8 { Some(usize::from(mapping[usize::from(ch) - 1]) - usize::from(coupled)) } else { None };
+        let lfe = if ch == 6 || ch == 8 {
+            Some(usize::from(mapping[usize::from(ch) - 1]) - usize::from(coupled))
+        } else {
+            None
+        };
         let weight = |s: usize| -> f64 {
             if s < usize::from(coupled) {
                 1.5
@@ -305,8 +344,13 @@ impl MultistreamEncoder {
         let mut encoders = Vec::with_capacity(usize::from(streams));
         for s in 0..usize::from(streams) {
             let channels = if s < usize::from(coupled) { 2 } else { 1 };
-            let bitrate = ((f64::from(cfg.bitrate) * weight(s) / total) as u32).clamp(6000, 510_000);
-            let mut c = EncoderConfig { channels, bitrate, ..cfg };
+            let bitrate =
+                ((f64::from(cfg.bitrate) * weight(s) / total) as u32).clamp(6000, 510_000);
+            let mut c = EncoderConfig {
+                channels,
+                bitrate,
+                ..cfg
+            };
             if Some(s) == lfe {
                 c.max_bandwidth = Some(Bandwidth::Narrow);
                 c.mode = Some(crate::packet::Mode::Celt);
@@ -316,7 +360,12 @@ impl MultistreamEncoder {
         let pre_skip = encoders[0].lookahead() as u16;
         let mut head = OpusHead::new(ch, pre_skip, cfg.sample_rate)?;
         head.pre_skip = pre_skip;
-        Ok(Self { encoders, coupled: usize::from(coupled), mapping: mapping.to_vec(), head })
+        Ok(Self {
+            encoders,
+            coupled: usize::from(coupled),
+            mapping: mapping.to_vec(),
+            head,
+        })
     }
 
     /// The identification header describing the stream.
@@ -344,13 +393,22 @@ impl MultistreamEncoder {
         let c = self.mapping.len();
         let n = self.frame_samples();
         if pcm.len() != n * c {
-            return Err(Error::BadArgument(format!("{} samples given, a packet takes {}", pcm.len(), n * c)));
+            return Err(Error::BadArgument(format!(
+                "{} samples given, a packet takes {}",
+                pcm.len(),
+                n * c
+            )));
         }
-        let mut inputs: Vec<Vec<f32>> =
-            (0..self.encoders.len()).map(|s| vec![0.0; n * if s < self.coupled { 2 } else { 1 }]).collect();
+        let mut inputs: Vec<Vec<f32>> = (0..self.encoders.len())
+            .map(|s| vec![0.0; n * if s < self.coupled { 2 } else { 1 }])
+            .collect();
         for (oc, &m) in self.mapping.iter().enumerate() {
             let m = usize::from(m);
-            let (s, ch, nch) = if m < 2 * self.coupled { (m / 2, m % 2, 2) } else { (m - self.coupled, 0, 1) };
+            let (s, ch, nch) = if m < 2 * self.coupled {
+                (m / 2, m % 2, 2)
+            } else {
+                (m - self.coupled, 0, 1)
+            };
             for i in 0..n {
                 inputs[s][i * nch + ch] = pcm[i * c + oc];
             }
@@ -377,7 +435,10 @@ mod tests {
     fn heads_round_trip() {
         let stereo = [1, 2, 0x38, 0x01, 0x80, 0xBB, 0, 0, 0, 0, 0];
         let h = OpusHead::parse(&stereo).unwrap();
-        assert_eq!((h.channels, h.pre_skip, h.family, h.streams, h.coupled), (2, 312, 0, 1, 1));
+        assert_eq!(
+            (h.channels, h.pre_skip, h.family, h.streams, h.coupled),
+            (2, 312, 0, 1, 1)
+        );
         assert_eq!(h.body(), stereo);
         let mut surround = vec![1, 6, 0x38, 0x01, 0x80, 0xBB, 0, 0, 0, 0, 1, 4, 2];
         surround.extend_from_slice(&[0, 4, 1, 2, 3, 5]);
@@ -396,7 +457,10 @@ mod tests {
         }
         let mut bad = surround.clone();
         bad[13] = 9;
-        assert!(OpusHead::parse(&bad).is_err(), "index past the decoded channels");
+        assert!(
+            OpusHead::parse(&bad).is_err(),
+            "index past the decoded channels"
+        );
     }
 }
 
@@ -421,7 +485,11 @@ mod round_trip {
     fn surround_channels_stay_apart() {
         for ch in 1..=8usize {
             let freqs: Vec<f32> = (0..ch).map(|k| 300.0 + 170.0 * k as f32).collect();
-            let cfg = EncoderConfig { channels: ch, bitrate: 64_000 * ch as u32, ..EncoderConfig::default() };
+            let cfg = EncoderConfig {
+                channels: ch,
+                bitrate: 64_000 * ch as u32,
+                ..EncoderConfig::default()
+            };
             let mut enc = MultistreamEncoder::new(cfg).unwrap();
             let head = OpusHead::parse(&enc.head().to_bytes()).unwrap();
             assert_eq!(head.family, if ch <= 2 { 0 } else { 1 });
@@ -445,7 +513,10 @@ mod round_trip {
                 for (o, &g) in freqs.iter().enumerate() {
                     // The LFE stream is band-limited: skip tones above it.
                     if o != c && g < 3000.0 {
-                        assert!(own > 30.0 * power(steady, ch, c, g), "{ch} channels: channel {c} carries channel {o}'s tone");
+                        assert!(
+                            own > 30.0 * power(steady, ch, c, g),
+                            "{ch} channels: channel {c} carries channel {o}'s tone"
+                        );
                     }
                 }
             }

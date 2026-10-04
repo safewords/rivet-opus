@@ -24,21 +24,39 @@ fn concealment_in_every_mode() {
         (Mode::Silk, 24_000, speech(48000, 2, 2.0)),
         (Mode::Hybrid, 40_000, speech(48000, 2, 2.0)),
     ] {
-        let cfg = EncoderConfig { channels: 2, bitrate: br, mode: Some(mode), vbr: false, application: Application::Voip, ..EncoderConfig::default() };
+        let cfg = EncoderConfig {
+            channels: 2,
+            bitrate: br,
+            mode: Some(mode),
+            vbr: false,
+            application: Application::Voip,
+            ..EncoderConfig::default()
+        };
         let mut enc = Encoder::new(cfg).unwrap();
         let mut dec = Decoder::new(48000, 2).unwrap();
         let n = enc.frame_samples() * 2;
         let mut out = Vec::new();
         for (k, chunk) in sig.chunks_exact(n).enumerate() {
             let p = enc.encode(chunk).unwrap();
-            let pcm = if k % 7 == 3 { dec.decode(None).unwrap() } else { dec.decode(Some(&p)).unwrap() };
-            assert_eq!(pcm.len(), n, "{mode:?}: concealment keeps the packet duration");
+            let pcm = if k % 7 == 3 {
+                dec.decode(None).unwrap()
+            } else {
+                dec.decode(Some(&p)).unwrap()
+            };
+            assert_eq!(
+                pcm.len(),
+                n,
+                "{mode:?}: concealment keeps the packet duration"
+            );
             out.extend(pcm);
         }
         let peak_in = sig.iter().fold(0.0f32, |a, v| a.max(v.abs()));
         let peak_out = out.iter().fold(0.0f32, |a, v| a.max(v.abs()));
         assert!(out.iter().all(|v| v.is_finite()));
-        assert!(peak_out < 2.0 * peak_in + 0.05, "{mode:?}: concealment overshoots ({peak_out} vs {peak_in})");
+        assert!(
+            peak_out < 2.0 * peak_in + 0.05,
+            "{mode:?}: concealment overshoots ({peak_out} vs {peak_in})"
+        );
     }
 }
 
@@ -60,7 +78,10 @@ fn lbrr_recovers_a_lost_packet() {
         };
         let mut enc = Encoder::new(cfg).unwrap();
         let n = enc.frame_samples() * channels;
-        let packets: Vec<Vec<u8>> = sig.chunks_exact(n).map(|c| enc.encode(c).unwrap()).collect();
+        let packets: Vec<Vec<u8>> = sig
+            .chunks_exact(n)
+            .map(|c| enc.encode(c).unwrap())
+            .collect();
         let delay = enc.lookahead() * channels;
         let lost = 30;
         let reference = &sig[lost * n - delay..(lost + 1) * n - delay];
@@ -78,8 +99,13 @@ fn lbrr_recovers_a_lost_packet() {
         }
         let fec_snr = segment_snr(reference, &fec_out);
         let plc_snr = segment_snr(reference, &plc_out);
-        eprintln!("{channels}ch: lost packet recovered by LBRR at {fec_snr:.2} dB, concealed at {plc_snr:.2} dB");
-        assert!(fec_snr > 5.0 && fec_snr > plc_snr + 3.0, "{channels}ch: FEC {fec_snr:.2} dB, PLC {plc_snr:.2} dB");
+        eprintln!(
+            "{channels}ch: lost packet recovered by LBRR at {fec_snr:.2} dB, concealed at {plc_snr:.2} dB"
+        );
+        assert!(
+            fec_snr > 5.0 && fec_snr > plc_snr + 3.0,
+            "{channels}ch: FEC {fec_snr:.2} dB, PLC {plc_snr:.2} dB"
+        );
         // The stream carries on normally after the recovery.
         let after = with_fec.decode(Some(&packets[lost + 1])).unwrap();
         assert_eq!(after.len(), n);

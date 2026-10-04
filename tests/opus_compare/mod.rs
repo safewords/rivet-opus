@@ -44,7 +44,9 @@
 #![allow(dead_code)]
 
 /// Band edges in 100 Hz bins.
-const BANDS: [usize; 22] = [0, 2, 4, 6, 8, 10, 12, 14, 16, 20, 24, 28, 32, 40, 48, 56, 68, 80, 96, 120, 156, 200];
+const BANDS: [usize; 22] = [
+    0, 2, 4, 6, 8, 10, 12, 14, 16, 20, 24, 28, 32, 40, 48, 56, 68, 80, 96, 120, 156, 200,
+];
 const NBANDS: usize = 21;
 /// Bins per frame of the 48 kHz analysis that are stored (W/2).
 const NFREQS: usize = 240;
@@ -66,11 +68,27 @@ pub struct Spectrum {
 
 /// Bins up to `BANDS[nbands]` of `frames` Hann-windowed frames of `x`
 /// (interleaved, `channels`), window `win`, hop `step`, scaled by `scale`.
-fn analyse(x: &[f32], channels: usize, frames: usize, win: usize, step: usize, scale: f32, nbands: usize) -> Spectrum {
+fn analyse(
+    x: &[f32],
+    channels: usize,
+    frames: usize,
+    win: usize,
+    step: usize,
+    scale: f32,
+    nbands: usize,
+) -> Spectrum {
     let freqs = NFREQS * win / WIN;
-    let window: Vec<f32> = (0..win).map(|k| 0.5 - 0.5 * (2.0 * std::f64::consts::PI * k as f64 / (win - 1) as f64).cos() as f32).collect();
-    let cos: Vec<f32> = (0..win).map(|k| (2.0 * std::f64::consts::PI * k as f64 / win as f64).cos() as f32).collect();
-    let sin: Vec<f32> = (0..win).map(|k| (2.0 * std::f64::consts::PI * k as f64 / win as f64).sin() as f32).collect();
+    let window: Vec<f32> = (0..win)
+        .map(|k| {
+            0.5 - 0.5 * (2.0 * std::f64::consts::PI * k as f64 / (win - 1) as f64).cos() as f32
+        })
+        .collect();
+    let cos: Vec<f32> = (0..win)
+        .map(|k| (2.0 * std::f64::consts::PI * k as f64 / win as f64).cos() as f32)
+        .collect();
+    let sin: Vec<f32> = (0..win)
+        .map(|k| (2.0 * std::f64::consts::PI * k as f64 / win as f64).sin() as f32)
+        .collect();
     let top = BANDS[nbands];
     let mut power = vec![0.0f32; frames * freqs * channels];
     let mut band = vec![0.0f32; frames * NBANDS * channels];
@@ -96,18 +114,33 @@ fn analyse(x: &[f32], channels: usize, frames: usize, win: usize, step: usize, s
                 power[(f * freqs + j) * channels + c] = re * re + im * im + 100_000.0;
             }
             for b in 0..nbands {
-                let sum: f32 = (BANDS[b]..BANDS[b + 1]).map(|j| power[(f * freqs + j) * channels + c]).sum();
+                let sum: f32 = (BANDS[b]..BANDS[b + 1])
+                    .map(|j| power[(f * freqs + j) * channels + c])
+                    .sum();
                 band[(f * NBANDS + b) * channels + c] = sum / (BANDS[b + 1] - BANDS[b]) as f32;
             }
         }
     }
-    Spectrum { frames, channels, freqs, power, band }
+    Spectrum {
+        frames,
+        channels,
+        freqs,
+        power,
+        band,
+    }
 }
 
 /// The reference's analysis: `reference` is the 48 kHz stereo `.dec`
 /// signal in 16-bit units; `channels` 1 downmixes it.
 pub fn reference_spectrum(reference: &[f32], channels: usize) -> Spectrum {
-    let x: Vec<f32> = if channels == 1 { reference.chunks_exact(2).map(|c| 0.5 * (c[0] + c[1])).collect() } else { reference.to_vec() };
+    let x: Vec<f32> = if channels == 1 {
+        reference
+            .chunks_exact(2)
+            .map(|c| 0.5 * (c[0] + c[1]))
+            .collect()
+    } else {
+        reference.to_vec()
+    };
     let len = x.len() / channels;
     assert!(len >= WIN, "reference too short");
     let frames = (len - WIN + STEP) / STEP;
@@ -135,7 +168,15 @@ pub fn quality(reference: &Spectrum, test: &[f32], rate: u32, channels: usize) -
     if ylen * ds < len48 {
         return None;
     }
-    let y = analyse(test, channels, frames, WIN / ds, STEP / ds, ds as f32, ybands);
+    let y = analyse(
+        test,
+        channels,
+        frames,
+        WIN / ds,
+        STEP / ds,
+        ds as f32,
+        ybands,
+    );
     let cc = channels;
     let xf = NFREQS;
     let yf = y.freqs;
@@ -232,7 +273,9 @@ pub fn quality(reference: &Spectrum, test: &[f32], rate: u32, channels: usize) -
 /// Rounds and clamps decoder output (±1.0 full scale) to 16-bit units, as
 /// a 16-bit PCM file of it would hold.
 pub fn to_pcm16_units(x: &[f32]) -> Vec<f32> {
-    x.iter().map(|&v| (v * 32768.0).round().clamp(-32768.0, 32767.0)).collect()
+    x.iter()
+        .map(|&v| (v * 32768.0).round().clamp(-32768.0, 32767.0))
+        .collect()
 }
 
 #[cfg(test)]
@@ -253,7 +296,11 @@ mod tests {
         let x: Vec<f32> = (0..2 * n)
             .map(|i| {
                 let t = (i / 2) as f32 / 48000.0;
-                [220.0f32, 1100.0, 5300.0].iter().map(|f| 6000.0 * (2.0 * std::f32::consts::PI * f * t).sin()).sum::<f32>().round()
+                [220.0f32, 1100.0, 5300.0]
+                    .iter()
+                    .map(|f| 6000.0 * (2.0 * std::f32::consts::PI * f * t).sin())
+                    .sum::<f32>()
+                    .round()
             })
             .collect();
         let spec = reference_spectrum(&x, 2);
@@ -261,7 +308,11 @@ mod tests {
         let noise: Vec<f32> = (0..2 * n).map(|_| rnd()).collect();
         let mut last = 100.0;
         for amp in [10.0f32, 100.0, 1000.0, 10000.0] {
-            let y: Vec<f32> = x.iter().zip(&noise).map(|(a, b)| (a + amp * b).round()).collect();
+            let y: Vec<f32> = x
+                .iter()
+                .zip(&noise)
+                .map(|(a, b)| (a + amp * b).round())
+                .collect();
             let q = quality(&spec, &y, 48000, 2).unwrap();
             assert!(q < last, "noise {amp}: Q {q} not below {last}");
             last = q;

@@ -39,12 +39,20 @@ pub(crate) fn bits2pulses(band: usize, lm: i32, b: i32) -> usize {
         }
     }
     let lo_cost = if lo == 0 { -1 } else { i32::from(cache[lo]) };
-    if b - lo_cost <= i32::from(cache[hi]) - b { lo } else { hi }
+    if b - lo_cost <= i32::from(cache[hi]) - b {
+        lo
+    } else {
+        hi
+    }
 }
 
 /// The cost in eighth bits of pseudo-pulse index `q` (CELT_SPEC §7.4).
 pub(crate) fn pulses2bits(band: usize, lm: i32, q: usize) -> i32 {
-    if q == 0 { 0 } else { i32::from(mode().cache(band, lm)[q]) + 1 }
+    if q == 0 {
+        0
+    } else {
+        i32::from(mode().cache(band, lm)[q]) + 1
+    }
 }
 
 /// Band boosts (CELT_SPEC §5.2; RFC 6716 §4.3.3). `want[i]` is how many
@@ -161,7 +169,8 @@ pub(crate) fn compute_allocation<C: Coder>(
     for j in start..end {
         let n = width(j);
         thresh[j] = (ci << BITRES).max((3 * (n << lmi) << BITRES) >> 4);
-        trim_offset[j] = (ci * n * (alloc_trim - 5 - lmi) * (end - j - 1) as i32 * (1 << (lmi + BITRES))) >> 6;
+        trim_offset[j] =
+            (ci * n * (alloc_trim - 5 - lmi) * (end - j - 1) as i32 * (1 << (lmi + BITRES))) >> 6;
         if n << lmi == 1 {
             trim_offset[j] -= ci << BITRES;
         }
@@ -169,7 +178,11 @@ pub(crate) fn compute_allocation<C: Coder>(
     // §6.4 the bracketing rows of the static table.
     let adj = |q: usize, j: usize| {
         let raw = (ci * width(j) * i32::from(BAND_ALLOCATION[q][j]) << lmi) >> 2;
-        if raw > 0 { (raw + trim_offset[j]).max(0) } else { raw }
+        if raw > 0 {
+            (raw + trim_offset[j]).max(0)
+        } else {
+            raw
+        }
     };
     let mut lo = 1usize;
     let mut hi = 10usize;
@@ -199,7 +212,11 @@ pub(crate) fn compute_allocation<C: Coder>(
     let mut skip_start = start;
     for j in start..end {
         let mut b1 = adj(lo, j);
-        let mut b2 = if hi <= 10 { adj(hi, j) } else { (cap[j] + trim_offset[j]).max(0) };
+        let mut b2 = if hi <= 10 {
+            adj(hi, j)
+        } else {
+            (cap[j] + trim_offset[j]).max(0)
+        };
         if lo > 0 {
             b1 += offsets[j];
         }
@@ -348,7 +365,8 @@ pub(crate) fn compute_allocation<C: Coder>(
             fine_priority[j] = true;
         }
         if excess > 0 {
-            let extra_fine = (excess >> (c - 1 + BITRES as usize)).min(MAX_FINE_BITS - fine_quant[j]);
+            let extra_fine =
+                (excess >> (c - 1 + BITRES as usize)).min(MAX_FINE_BITS - fine_quant[j]);
             fine_quant[j] += extra_fine;
             let extra_bits = extra_fine * ci << BITRES;
             fine_priority[j] = extra_bits >= excess - balance;
@@ -361,7 +379,15 @@ pub(crate) fn compute_allocation<C: Coder>(
         alloc[j] = 0;
         fine_priority[j] = fine_quant[j] < 1;
     }
-    Allocation { pulses: alloc, fine_quant, fine_priority, coded_bands: coded, balance, intensity, dual_stereo }
+    Allocation {
+        pulses: alloc,
+        fine_quant,
+        fine_priority,
+        coded_bands: coded,
+        balance,
+        intensity,
+        dual_stereo,
+    }
 }
 
 #[cfg(test)]
@@ -380,7 +406,10 @@ mod tests {
                     let cost = pulses2bits(band, lm, q);
                     // Equal costs (N = 1) resolve to the smallest count.
                     let back = bits2pulses(band, lm, cost);
-                    assert!(back <= q && pulses2bits(band, lm, back) == cost, "band {band} lm {lm} q {q}");
+                    assert!(
+                        back <= q && pulses2bits(band, lm, back) == cost,
+                        "band {band} lm {lm} q {q}"
+                    );
                 }
             }
         }

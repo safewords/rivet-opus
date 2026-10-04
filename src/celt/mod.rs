@@ -28,7 +28,14 @@ impl Synth {
     /// The shared transforms (their tables are built once per process).
     pub fn new() -> &'static Self {
         static SYNTH: std::sync::OnceLock<Synth> = std::sync::OnceLock::new();
-        SYNTH.get_or_init(|| Self { mdcts: [Mdct::new(120), Mdct::new(240), Mdct::new(480), Mdct::new(960)] })
+        SYNTH.get_or_init(|| Self {
+            mdcts: [
+                Mdct::new(120),
+                Mdct::new(240),
+                Mdct::new(480),
+                Mdct::new(960),
+            ],
+        })
     }
 
     fn mdct(&self, n: usize) -> &Mdct {
@@ -77,7 +84,10 @@ impl Synth {
             mdct.inverse(&coefs, &mut y);
             // `window_at` region by region: rising, flat, falling.
             let w = &mode::mode().window;
-            let (o, y) = (&mut out[b * nb..b * nb + nb + OVERLAP], &y[rise..rise + nb + OVERLAP]);
+            let (o, y) = (
+                &mut out[b * nb..b * nb + nb + OVERLAP],
+                &y[rise..rise + nb + OVERLAP],
+            );
             for i in 0..OVERLAP {
                 o[i] += SYNTH_SCALE * y[i] * w[i];
             }
@@ -105,7 +115,10 @@ impl Synth {
             buf.fill(0.0);
             // `window_at` region by region: rising, flat, falling.
             let w = &mode::mode().window;
-            let (d, x) = (&mut buf[rise..rise + nb + OVERLAP], &x[b * nb..b * nb + nb + OVERLAP]);
+            let (d, x) = (
+                &mut buf[rise..rise + nb + OVERLAP],
+                &x[b * nb..b * nb + nb + OVERLAP],
+            );
             for i in 0..OVERLAP {
                 d[i] = x[i] * w[i];
             }
@@ -140,7 +153,9 @@ mod tests {
             // One block of ones through the forward windowing: the windowed
             // buffer is visible through `mdct_blocks`' linearity, so compare
             // against windowing by `window_at` then the same transform.
-            let x: Vec<f32> = (0..nb + OVERLAP).map(|i| 1.0 + (i % 7) as f32 / 8.0).collect();
+            let x: Vec<f32> = (0..nb + OVERLAP)
+                .map(|i| 1.0 + (i % 7) as f32 / 8.0)
+                .collect();
             let got = s.mdct_blocks(&x, nb, 1);
             let mut buf = vec![0.0f32; 2 * nb];
             for t in rise..rise + nb + OVERLAP {
@@ -150,7 +165,11 @@ mod tests {
             s.mdct(nb).forward(&buf, &mut want);
             let scale = 2.0 / nb as f32 / SYNTH_SCALE;
             for k in 0..nb {
-                assert_eq!(got[k].to_bits(), (want[k] * scale).to_bits(), "nb {nb} k {k}");
+                assert_eq!(
+                    got[k].to_bits(),
+                    (want[k] * scale).to_bits(),
+                    "nb {nb} k {k}"
+                );
             }
             // Synthesis: overlap-add of one block onto zeros.
             let coefs: Vec<f32> = (0..nb).map(|k| ((k * 31) % 17) as f32 - 8.0).collect();
@@ -171,14 +190,21 @@ mod tests {
         let s = Synth::new();
         for (n, blocks) in [(960, 1), (960, 8), (480, 4), (120, 1), (240, 2)] {
             let total = 6 * n + OVERLAP;
-            let x: Vec<f32> = (0..total).map(|i| ((i * 7919) % 1000) as f32 / 500.0 - 1.0).collect();
+            let x: Vec<f32> = (0..total)
+                .map(|i| ((i * 7919) % 1000) as f32 / 500.0 - 1.0)
+                .collect();
             let mut out = vec![0.0f32; total + n];
             for f in 0..6 {
                 let coefs = s.mdct_blocks(&x[f * n..f * n + n + OVERLAP], n, blocks);
                 s.imdct_ola(&coefs, &mut out[f * n..], n, blocks);
             }
             for i in OVERLAP..5 * n {
-                assert!((out[i] - x[i]).abs() < 1e-3, "n {n} b {blocks} i {i}: {} vs {}", out[i], x[i]);
+                assert!(
+                    (out[i] - x[i]).abs() < 1e-3,
+                    "n {n} b {blocks} i {i}: {} vs {}",
+                    out[i],
+                    x[i]
+                );
             }
         }
     }

@@ -90,7 +90,9 @@ struct Delay {
 
 impl Delay {
     fn new(samples: usize) -> Self {
-        Self { buf: vec![0.0; samples] }
+        Self {
+            buf: vec![0.0; samples],
+        }
     }
     /// Pushes `input` and returns as many samples, delayed.
     fn process(&mut self, input: &[f32]) -> Vec<f32> {
@@ -127,16 +129,28 @@ impl Encoder {
     /// An encoder with the given settings.
     pub fn new(cfg: EncoderConfig) -> Result<Self> {
         if !crate::decoder::SAMPLE_RATES.contains(&cfg.sample_rate) {
-            return Err(config(format!("input rate {} is not 8, 12, 16, 24 or 48 kHz", cfg.sample_rate)));
+            return Err(config(format!(
+                "input rate {} is not 8, 12, 16, 24 or 48 kHz",
+                cfg.sample_rate
+            )));
         }
         if !(1..=2).contains(&cfg.channels) {
-            return Err(config(format!("{} channels: one Opus stream has 1 or 2", cfg.channels)));
+            return Err(config(format!(
+                "{} channels: one Opus stream has 1 or 2",
+                cfg.channels
+            )));
         }
         if !valid_frame_size(cfg.frame_size) {
-            return Err(config(format!("frame size {} is not 2.5, 5, 10, 20, 40 or 60 ms", cfg.frame_size)));
+            return Err(config(format!(
+                "frame size {} is not 2.5, 5, 10, 20, 40 or 60 ms",
+                cfg.frame_size
+            )));
         }
         if !(6000..=510_000).contains(&cfg.bitrate) {
-            return Err(config(format!("bit rate {} outside 6-510 kb/s", cfg.bitrate)));
+            return Err(config(format!(
+                "bit rate {} outside 6-510 kb/s",
+                cfg.bitrate
+            )));
         }
         let c = cfg.channels;
         let (upsamplers, upsample_delay) = if cfg.sample_rate == 48000 {
@@ -146,7 +160,12 @@ impl Encoder {
             // 48 kHz samples, so the stream's pre-skip stays exact.
             let d = 48;
             let ms = d as f64 / 48.0;
-            ((0..c).map(|_| Resampler::new(cfg.sample_rate as usize, 48000, ms)).collect(), d)
+            (
+                (0..c)
+                    .map(|_| Resampler::new(cfg.sample_rate as usize, 48000, ms))
+                    .collect(),
+                d,
+            )
         };
         Ok(Self {
             cfg,
@@ -311,7 +330,10 @@ impl Encoder {
         let c = self.cfg.channels;
         let need = self.frame_samples() * c;
         if pcm.len() != need {
-            return Err(crate::Error::BadArgument(format!("{} samples given, a packet takes {need}", pcm.len())));
+            return Err(crate::Error::BadArgument(format!(
+                "{} samples given, a packet takes {need}",
+                pcm.len()
+            )));
         }
         let x48: Vec<f32> = if self.upsamplers.is_empty() {
             pcm.to_vec()
@@ -379,20 +401,30 @@ impl Encoder {
         let delayed = self.celt_delay.process(x48);
         let sub = n.min(960);
         let count = n / sub;
-        let boost = if self.cfg.vbr { vbr_boost(&delayed, c) } else { 1.0 };
+        let boost = if self.cfg.vbr {
+            vbr_boost(&delayed, c)
+        } else {
+            1.0
+        };
         let total = self.packet_bytes(n, boost);
         let overhead = if count == 1 { 1 } else { 2 };
-        let per_frame = ((total.saturating_sub(overhead)) / count).clamp(2, packet::MAX_FRAME_BYTES);
+        let per_frame =
+            ((total.saturating_sub(overhead)) / count).clamp(2, packet::MAX_FRAME_BYTES);
         let toc = Toc {
             config: Toc::config_for(Mode::Celt, bw, sub).expect("CELT config"),
             stereo: c == 2,
             code: 0,
         };
-        let cfg = FrameConfig { start: 0, end: bw.celt_end_band(), bitrate: self.cfg.bitrate as i32 };
+        let cfg = FrameConfig {
+            start: 0,
+            end: bw.celt_end_band(),
+            bitrate: self.cfg.bitrate as i32,
+        };
         let mut frames = Vec::with_capacity(count);
         for k in 0..count {
             let mut enc = RangeEncoder::new(per_frame);
-            self.celt.encode(&delayed[k * sub * c..(k + 1) * sub * c], sub, &mut enc, cfg);
+            self.celt
+                .encode(&delayed[k * sub * c..(k + 1) * sub * c], sub, &mut enc, cfg);
             self.final_range = enc.range();
             frames.push(enc.finish());
         }
@@ -415,7 +447,9 @@ impl Encoder {
             };
             let total_ms = LOOKAHEAD_48K as f64 / 48.0;
             let rs_ms = total_ms - SILK_LOOKAHEAD_MS - 1.0 / fs_khz as f64 - table54;
-            self.silk_down = (0..c).map(|_| Resampler::new(48000, fs_khz * 1000, rs_ms)).collect();
+            self.silk_down = (0..c)
+                .map(|_| Resampler::new(48000, fs_khz * 1000, rs_ms))
+                .collect();
             let ahead = (SILK_LOOKAHEAD_MS * fs_khz as f64).round() as usize;
             self.silk_buf = vec![0.0; ahead * c];
             self.silk_fs = fs_khz;
@@ -435,34 +469,65 @@ impl Encoder {
         self.silk_buf.clone()
     }
 
-    fn encode_silk_hybrid(&mut self, x48: &[f32], n: usize, bw: Bandwidth, mode: Mode) -> Result<Vec<u8>> {
+    fn encode_silk_hybrid(
+        &mut self,
+        x48: &[f32],
+        n: usize,
+        bw: Bandwidth,
+        mode: Mode,
+    ) -> Result<Vec<u8>> {
         let c = self.cfg.channels;
-        let fs_khz = if mode == Mode::Hybrid { 16 } else { crate::silk::decoder::fs_khz(bw) };
+        let fs_khz = if mode == Mode::Hybrid {
+            16
+        } else {
+            crate::silk::decoder::fs_khz(bw)
+        };
         let silk_in = self.silk_input(x48, fs_khz);
         let delayed = self.celt_delay.process(x48);
         let frame_len_total = n * fs_khz / 48;
-        let boost = if self.cfg.vbr { vbr_boost(&delayed, c) } else { 1.0 };
+        let boost = if self.cfg.vbr {
+            vbr_boost(&delayed, c)
+        } else {
+            1.0
+        };
         let total_bytes = self.packet_bytes(n, boost);
         let result = if mode == Mode::Silk {
             // One Opus frame of up to 60 ms.
             let budget = ((total_bytes - 1).min(packet::MAX_FRAME_BYTES) * 8) as i32;
             self.silk.hard_limit = false;
             let mut enc = RangeEncoder::new(packet::MAX_FRAME_BYTES);
-            self.silk.encode(&mut enc, &silk_in, frame_len_total, fs_khz, n / 48, budget, self.cfg.fec);
+            self.silk.encode(
+                &mut enc,
+                &silk_in,
+                frame_len_total,
+                fs_khz,
+                n / 48,
+                budget,
+                self.cfg.fec,
+            );
             // Size the frame to the bits used: fewer than 17 bits left over
             // tell the decoder there is no redundancy (§4.5.1.1).
             let used = ((enc.tell() + 7) >> 3) as usize;
             enc.shrink(used.max(1));
             self.final_range = enc.range();
             let frame = enc.finish();
-            let toc = Toc { config: Toc::config_for(Mode::Silk, bw, n).expect("SILK config"), stereo: c == 2, code: 0 };
-            let pad = if self.cfg.vbr { None } else { Some(total_bytes) };
+            let toc = Toc {
+                config: Toc::config_for(Mode::Silk, bw, n).expect("SILK config"),
+                stereo: c == 2,
+                code: 0,
+            };
+            let pad = if self.cfg.vbr {
+                None
+            } else {
+                Some(total_bytes)
+            };
             packet::build(toc, &[&frame], pad)
         } else {
             let sub = n.min(960);
             let count = n / sub;
             let overhead = if count == 1 { 1 } else { 2 };
-            let per_frame = ((total_bytes.saturating_sub(overhead)) / count).clamp(8, packet::MAX_FRAME_BYTES);
+            let per_frame =
+                ((total_bytes.saturating_sub(overhead)) / count).clamp(8, packet::MAX_FRAME_BYTES);
             // The SILK layer's share (§2.1.1: hybrid splits the rate). It
             // codes everything below 8 kHz; the CELT layer only bands 17 and
             // up (§4.3), which take few bits. With 55 % of the rate SILK had
@@ -473,12 +538,17 @@ impl Encoder {
             // apart at 32 kb/s (tests/stereo_separation.rs).
             let per_ch = self.cfg.bitrate as f64 / c as f64;
             let silk_rate = (HYBRID_SILK_SHARE * per_ch).clamp(8000.0, 22000.0) * c as f64;
-            let silk_bits = ((silk_rate * sub as f64 / 48000.0) as i32).min(per_frame as i32 * 8 - 40);
+            let silk_bits =
+                ((silk_rate * sub as f64 / 48000.0) as i32).min(per_frame as i32 * 8 - 40);
             let sub_len = sub * fs_khz / 48;
             let ahead_len = silk_in.len() / c - frame_len_total;
             let mut frames = Vec::with_capacity(count);
             self.silk.hard_limit = true;
-            let cfg = FrameConfig { start: 17, end: bw.celt_end_band(), bitrate: self.cfg.bitrate as i32 };
+            let cfg = FrameConfig {
+                start: 17,
+                end: bw.celt_end_band(),
+                bitrate: self.cfg.bitrate as i32,
+            };
             for k in 0..count {
                 // The SILK layer goes into a coder with room for the largest
                 // frame: its rate loop aims at `silk_bits`, but a frame's
@@ -493,7 +563,15 @@ impl Encoder {
                 let mut enc = RangeEncoder::new(packet::MAX_FRAME_BYTES);
                 let lo = k * sub_len * c;
                 let hi = (k * sub_len + sub_len + ahead_len) * c;
-                self.silk.encode(&mut enc, &silk_in[lo..hi.min(silk_in.len())], sub_len, fs_khz, sub / 48, silk_bits, self.cfg.fec);
+                self.silk.encode(
+                    &mut enc,
+                    &silk_in[lo..hi.min(silk_in.len())],
+                    sub_len,
+                    fs_khz,
+                    sub / 48,
+                    silk_bits,
+                    self.cfg.fec,
+                );
                 let need = ((enc.tell() + HYBRID_CELT_MIN_BITS + 7) >> 3) as usize;
                 let frame_bytes = per_frame.max(need).min(packet::MAX_FRAME_BYTES);
                 enc.shrink(frame_bytes);
@@ -501,14 +579,27 @@ impl Encoder {
                 if enc.tell() + 37 <= (frame_bytes * 8) as i32 {
                     enc.bit_logp(false, 12);
                 }
-                self.celt.encode(&delayed[k * sub * c..(k + 1) * sub * c], sub, &mut enc, cfg);
+                self.celt
+                    .encode(&delayed[k * sub * c..(k + 1) * sub * c], sub, &mut enc, cfg);
                 debug_assert!(!enc.error(), "hybrid frame overflowed");
                 self.final_range = enc.range();
                 frames.push(enc.finish());
             }
-            let toc = Toc { config: Toc::config_for(Mode::Hybrid, bw, sub).expect("hybrid config"), stereo: c == 2, code: 0 };
+            let toc = Toc {
+                config: Toc::config_for(Mode::Hybrid, bw, sub).expect("hybrid config"),
+                stereo: c == 2,
+                code: 0,
+            };
             let refs: Vec<&[u8]> = frames.iter().map(|f| f.as_slice()).collect();
-            packet::build(toc, &refs, if self.cfg.vbr { None } else { Some(total_bytes) })
+            packet::build(
+                toc,
+                &refs,
+                if self.cfg.vbr {
+                    None
+                } else {
+                    Some(total_bytes)
+                },
+            )
         };
         self.silk_buf.drain(..frame_len_total * c);
         result
@@ -525,11 +616,23 @@ fn vbr_boost(x: &[f32], c: usize) -> f32 {
     let e: f32 = x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32;
     let db = 10.0 * (e + 1e-12).log10();
     // Quiet frames need fewer bits.
-    let mut w = if db < -70.0 { 0.3 } else if db < -50.0 { 0.6 } else { 1.0 };
+    let mut w = if db < -70.0 {
+        0.3
+    } else if db < -50.0 {
+        0.6
+    } else {
+        1.0
+    };
     // A sharp onset inside the frame.
     let q = n / 4;
     if q > 0 {
-        let seg = |k: usize| -> f32 { x[k * q * c..(k + 1) * q * c].iter().map(|v| v * v).sum::<f32>() + 1e-9 };
+        let seg = |k: usize| -> f32 {
+            x[k * q * c..(k + 1) * q * c]
+                .iter()
+                .map(|v| v * v)
+                .sum::<f32>()
+                + 1e-9
+        };
         let mut prev = seg(0);
         for k in 1..4 {
             let s = seg(k);

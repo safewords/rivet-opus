@@ -133,7 +133,11 @@ pub fn round_trip(cfg: EncoderConfig, pcm: &[f32]) -> RoundTrip {
         assert_eq!(parsed.samples(), cfg.frame_size, "packet duration");
         assert!(parsed.frames.iter().all(|f| f.len() <= 1275));
         let out = dec.decode(Some(&p)).unwrap();
-        assert_eq!(dec.final_range(), enc.final_range(), "encoder and decoder final ranges differ");
+        assert_eq!(
+            dec.final_range(),
+            enc.final_range(),
+            "encoder and decoder final ranges differ"
+        );
         decoded.extend_from_slice(&out);
         packets.push(p);
     }
@@ -151,5 +155,11 @@ pub fn round_trip(cfg: EncoderConfig, pcm: &[f32]) -> RoundTrip {
     }
     let bytes: usize = packets.iter().map(|p| p.len()).sum();
     let seconds = packets.len() as f64 * cfg.frame_size as f64 / 48000.0;
-    RoundTrip { bitrate: bytes as f64 * 8.0 / seconds, snr: 10.0 * (s / e.max(1e-30)).log10(), packets, decoded, lookahead: delay }
+    RoundTrip {
+        bitrate: bytes as f64 * 8.0 / seconds,
+        snr: 10.0 * (s / e.max(1e-30)).log10(),
+        packets,
+        decoded,
+        lookahead: delay,
+    }
 }

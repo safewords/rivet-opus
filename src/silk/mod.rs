@@ -7,7 +7,10 @@ pub(crate) mod tables;
 
 use crate::packet::Bandwidth;
 use crate::range::RangeDecoder;
-use decoder::{ChannelState, CondCoding, StereoState, decode_indices, decode_pulses, decode_stereo_weights, excitation_q23, fs_khz};
+use decoder::{
+    ChannelState, CondCoding, StereoState, decode_indices, decode_pulses, decode_stereo_weights,
+    excitation_q23, fs_khz,
+};
 use tables::*;
 
 /// The signal type of a SILK frame (Table 10).
@@ -134,7 +137,11 @@ impl SilkDecoder {
         let Some(ec) = ec else {
             for _ in 0..nf {
                 let mid = self.ch[0].conceal(nb_subfr);
-                let side = if c == 2 { self.ch[1].conceal(nb_subfr) } else { vec![0.0; mid.len()] };
+                let side = if c == 2 {
+                    self.ch[1].conceal(nb_subfr)
+                } else {
+                    vec![0.0; mid.len()]
+                };
                 let w = self.stereo.prev_w;
                 self.emit(&mid, &side, c, w, out_channels, &mut outs);
             }
@@ -156,7 +163,11 @@ impl SilkDecoder {
                 if nf == 1 {
                     lbrr_flags[ch][0] = true;
                 } else {
-                    let v = if nf == 2 { ec.icdf(&LBRR_FLAGS_2_ICDF, 8) } else { ec.icdf(&LBRR_FLAGS_3_ICDF, 8) } + 1;
+                    let v = if nf == 2 {
+                        ec.icdf(&LBRR_FLAGS_2_ICDF, 8)
+                    } else {
+                        ec.icdf(&LBRR_FLAGS_3_ICDF, 8)
+                    } + 1;
                     for (i, f) in lbrr_flags[ch].iter_mut().enumerate().take(nf) {
                         *f = (v >> i) & 1 != 0;
                     }
@@ -181,7 +192,11 @@ impl SilkDecoder {
                         lbrr_mid_only[i] = ec.icdf(&MID_ONLY_ICDF, 8) == 1;
                     }
                 }
-                let cond = if i > 0 && lbrr_flags[ch][i - 1] { CondCoding::Conditional } else { CondCoding::Independent };
+                let cond = if i > 0 && lbrr_flags[ch][i - 1] {
+                    CondCoding::Conditional
+                } else {
+                    CondCoding::Independent
+                };
                 let ix = decode_indices(ec, fs, nb_subfr, true, cond, prev_type[ch], prev_lag[ch]);
                 let raw = decode_pulses(ec, ix.signal_type, ix.qoff, frame_len);
                 prev_type[ch] = ix.signal_type;
@@ -204,7 +219,11 @@ impl SilkDecoder {
                 } else {
                     vec![0.0; mid.len()]
                 };
-                let w = if frames[0].is_some() { lbrr_w[i] } else { self.stereo.prev_w };
+                let w = if frames[0].is_some() {
+                    lbrr_w[i]
+                } else {
+                    self.stereo.prev_w
+                };
                 self.emit(&mid, &side, c, w, out_channels, &mut outs);
             }
             return outs;
@@ -226,7 +245,11 @@ impl SilkDecoder {
                     side = vec![0.0; frame_len];
                     continue;
                 }
-                let mut cond = if i == 0 { CondCoding::Independent } else { CondCoding::Conditional };
+                let mut cond = if i == 0 {
+                    CondCoding::Independent
+                } else {
+                    CondCoding::Conditional
+                };
                 if ch == 1 && self.side_prev_uncoded {
                     // §4.2.7.9: after an uncoded side frame the side channel
                     // starts from a clean state.
@@ -236,7 +259,15 @@ impl SilkDecoder {
                     }
                 }
                 let st = &self.ch[ch];
-                let ix = decode_indices(ec, fs, nb_subfr, vad[ch][i], cond, st.prev_signal_type, st.prev_lag);
+                let ix = decode_indices(
+                    ec,
+                    fs,
+                    nb_subfr,
+                    vad[ch][i],
+                    cond,
+                    st.prev_signal_type,
+                    st.prev_lag,
+                );
                 let raw = decode_pulses(ec, ix.signal_type, ix.qoff, frame_len);
                 let out = self.synth_parsed(ch, &Parsed { ix, raw, cond }, nb_subfr, frame_len);
                 if ch == 0 {
@@ -257,14 +288,28 @@ impl SilkDecoder {
         outs
     }
 
-    fn synth_parsed(&mut self, ch: usize, p: &Parsed, nb_subfr: usize, frame_len: usize) -> Vec<f32> {
+    fn synth_parsed(
+        &mut self,
+        ch: usize,
+        p: &Parsed,
+        nb_subfr: usize,
+        frame_len: usize,
+    ) -> Vec<f32> {
         let st = &mut self.ch[ch];
         let params = st.dequantize(&p.ix, nb_subfr, p.cond);
         let e = excitation_q23(&p.raw, p.ix.signal_type, p.ix.qoff, p.ix.seed, frame_len);
         st.synthesize(&params, &e, nb_subfr)
     }
 
-    fn emit(&mut self, mid: &[f32], side: &[f32], c: usize, w: [i32; 2], out_channels: usize, outs: &mut [Vec<f32>]) {
+    fn emit(
+        &mut self,
+        mid: &[f32],
+        side: &[f32],
+        c: usize,
+        w: [i32; 2],
+        out_channels: usize,
+        outs: &mut [Vec<f32>],
+    ) {
         if out_channels == 2 && c == 2 {
             let (l, r) = self.stereo.unmix(mid, side, w, self.fs_khz);
             outs[0].extend_from_slice(&l);

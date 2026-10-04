@@ -7,7 +7,9 @@
 //! writes them. Energies are log2 amplitudes relative to the band means
 //! `E_MEANS`, kept per channel as `[channel][band]`.
 
-use super::tables::{BETA_COEF, BETA_INTRA, E_PROB_MODEL, MAX_FINE_BITS, NB_EBANDS, PRED_COEF, SMALL_ENERGY_ICDF};
+use super::tables::{
+    BETA_COEF, BETA_INTRA, E_PROB_MODEL, MAX_FINE_BITS, NB_EBANDS, PRED_COEF, SMALL_ENERGY_ICDF,
+};
 use crate::range::Coder;
 
 /// Per-channel band energies.
@@ -90,7 +92,11 @@ fn laplace_interval(val: i32, fs0: u32, decay: u32) -> (u32, u32, i32) {
         k += di;
         fl += 2 * di;
     }
-    if val < 0 { (fl, fs, -(k as i32)) } else { (fl + fs, fs, k as i32) }
+    if val < 0 {
+        (fl, fs, -(k as i32))
+    } else {
+        (fl + fs, fs, k as i32)
+    }
 }
 
 /// Coarse energy (CELT_SPEC §2.3; RFC 6716 §4.3.2.1, §5.3.2): for bands
@@ -111,7 +117,11 @@ pub(crate) fn code_coarse<C: Coder>(
     c: usize,
     lm: usize,
 ) {
-    let (alpha, beta) = if intra { (0.0, BETA_INTRA) } else { (PRED_COEF[lm], BETA_COEF[lm]) };
+    let (alpha, beta) = if intra {
+        (0.0, BETA_INTRA)
+    } else {
+        (PRED_COEF[lm], BETA_COEF[lm])
+    };
     let model = &E_PROB_MODEL[lm][usize::from(intra)];
     let mut prev = [0.0f32; 2];
     for i in start..end {
@@ -136,7 +146,12 @@ pub(crate) fn code_coarse<C: Coder>(
             let left = budget - t;
             let qi = if left >= 15 {
                 let k = i.min(20);
-                laplace(ec, qi, u32::from(model[2 * k]) << 7, u32::from(model[2 * k + 1]) << 6)
+                laplace(
+                    ec,
+                    qi,
+                    u32::from(model[2 * k]) << 7,
+                    u32::from(model[2 * k + 1]) << 6,
+                )
             } else if left >= 2 {
                 // PDF {2, 1, 1}/4 over the values 0, −1, +1.
                 let qi = qi.clamp(-1, 1);
@@ -148,9 +163,15 @@ pub(crate) fn code_coarse<C: Coder>(
                     }
                 } else {
                     let fs = ec.decode_fs(4);
-                    (0..2).find(|&k| fs < 4 - u32::from(SMALL_ENERGY_ICDF[k])).unwrap_or(2)
+                    (0..2)
+                        .find(|&k| fs < 4 - u32::from(SMALL_ENERGY_ICDF[k]))
+                        .unwrap_or(2)
                 };
-                let fl = if s == 0 { 0 } else { 4 - u32::from(SMALL_ENERGY_ICDF[s - 1]) };
+                let fl = if s == 0 {
+                    0
+                } else {
+                    4 - u32::from(SMALL_ENERGY_ICDF[s - 1])
+                };
                 ec.code(fl, 4 - u32::from(SMALL_ENERGY_ICDF[s]), 4);
                 (s >> 1) as i32 ^ -((s & 1) as i32)
             } else if left >= 1 {
@@ -194,7 +215,11 @@ pub(crate) fn code_fine<C: Coder>(
         }
         let steps = 1i32 << fq;
         for ch in 0..c {
-            let value = if C::ENCODE { (((err[ch][i] + 0.5) * steps as f32).floor() as i32).clamp(0, steps - 1) } else { 0 };
+            let value = if C::ENCODE {
+                (((err[ch][i] + 0.5) * steps as f32).floor() as i32).clamp(0, steps - 1)
+            } else {
+                0
+            };
             let q2 = ec.bits(value as u32, fq as u32);
             let offset = (q2 as f32 + 0.5) * (1 << (14 - fq)) as f32 * (1.0 / 16384.0) - 0.5;
             old[ch][i] += offset;
@@ -227,7 +252,8 @@ pub(crate) fn code_final<C: Coder>(
             }
             for ch in 0..c {
                 let q2 = ec.bits(u32::from(C::ENCODE && err[ch][i] >= 0.0), 1);
-                let offset = (q2 as f32 - 0.5) * (1 << (14 - fine_quant[i] - 1)) as f32 * (1.0 / 16384.0);
+                let offset =
+                    (q2 as f32 - 0.5) * (1 << (14 - fine_quant[i] - 1)) as f32 * (1.0 / 16384.0);
                 old[ch][i] += offset;
                 err[ch][i] -= offset;
                 bits_left -= 1;
@@ -245,15 +271,27 @@ mod tests {
     /// reports it.
     #[test]
     fn laplace_round_trips() {
-        for &(fs0, decay) in &[(72u32 << 7, 127u32 << 6), (24 << 7, 179 << 6), (177 << 7, 11 << 6), (21 << 7, 178 << 6)] {
+        for &(fs0, decay) in &[
+            (72u32 << 7, 127u32 << 6),
+            (24 << 7, 179 << 6),
+            (177 << 7, 11 << 6),
+            (21 << 7, 178 << 6),
+        ] {
             let vals: Vec<i32> = (-40..=40).chain([-1000, 1000, 300, -300]).collect();
             let mut enc = RangeEncoder::new(4000);
-            let coded: Vec<i32> = vals.iter().map(|&v| laplace(&mut enc, v, fs0, decay)).collect();
+            let coded: Vec<i32> = vals
+                .iter()
+                .map(|&v| laplace(&mut enc, v, fs0, decay))
+                .collect();
             let buf = enc.finish();
             let mut dec = RangeDecoder::new(&buf);
             for (&v, &c) in vals.iter().zip(&coded) {
                 assert!(c.signum() == v.signum() && c.abs() <= v.abs());
-                assert_eq!(laplace(&mut dec, 0, fs0, decay), c, "fs {fs0} decay {decay} value {v}");
+                assert_eq!(
+                    laplace(&mut dec, 0, fs0, decay),
+                    c,
+                    "fs {fs0} decay {decay} value {v}"
+                );
             }
         }
     }

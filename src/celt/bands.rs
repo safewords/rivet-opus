@@ -14,7 +14,10 @@ use super::cwrs;
 use super::energy::tell;
 use super::mode::{get_pulses, mode};
 use super::rate::{bits2pulses, pulses2bits};
-use super::tables::{BITRES, EBANDS, NB_EBANDS, QTHETA_OFFSET, QTHETA_OFFSET_TWOPHASE, SPREAD_FACTOR, TF_SELECT_TABLE};
+use super::tables::{
+    BITRES, EBANDS, NB_EBANDS, QTHETA_OFFSET, QTHETA_OFFSET_TWOPHASE, SPREAD_FACTOR,
+    TF_SELECT_TABLE,
+};
 use crate::range::Coder;
 
 /// Spreading choices (CELT_SPEC §1.2 step 7).
@@ -113,7 +116,14 @@ pub(crate) fn quant_all_bands<C: Coder>(
     let stereo = y.is_some();
     let base = m * EBANDS[p.start];
     let norm_len = m * EBANDS[NB_EBANDS];
-    let (mut norm, mut norm2) = if C::ENCODE { (Vec::new(), Vec::new()) } else { (vec![0.0f32; norm_len], vec![0.0f32; if stereo { norm_len } else { 0 }]) };
+    let (mut norm, mut norm2) = if C::ENCODE {
+        (Vec::new(), Vec::new())
+    } else {
+        (
+            vec![0.0f32; norm_len],
+            vec![0.0f32; if stereo { norm_len } else { 0 }],
+        )
+    };
     let mut collapse: CollapseMasks = [[0; 2]; NB_EBANDS];
     let mut balance = p.balance;
     let mut lowband_offset = 0usize;
@@ -129,7 +139,9 @@ pub(crate) fn quant_all_bands<C: Coder>(
         let remaining_bits = p.shape_total - tell - 1;
         let b = if i < p.coded_bands {
             let curr_balance = balance / (p.coded_bands - i).min(3) as i32;
-            (remaining_bits + 1).min(p.pulses[i] + curr_balance).clamp(0, 16383)
+            (remaining_bits + 1)
+                .min(p.pulses[i] + curr_balance)
+                .clamp(0, 16383)
         } else {
             0
         };
@@ -138,7 +150,9 @@ pub(crate) fn quant_all_bands<C: Coder>(
         let mut lowband_at = None;
         let (mut x_cm, mut y_cm) = ((1u32 << p.blocks) - 1, (1u32 << p.blocks) - 1);
         if !C::ENCODE {
-            if (o as i32 - n as i32 >= base as i32 || i == p.start + 1) && (update_lowband || lowband_offset == 0) {
+            if (o as i32 - n as i32 >= base as i32 || i == p.start + 1)
+                && (update_lowband || lowband_offset == 0)
+            {
                 lowband_offset = i;
             }
             if i == p.start + 1 {
@@ -153,7 +167,9 @@ pub(crate) fn quant_all_bands<C: Coder>(
                     }
                 }
             }
-            if lowband_offset != 0 && (p.spread != SPREAD_AGGRESSIVE || p.blocks > 1 || tf_change < 0) {
+            if lowband_offset != 0
+                && (p.spread != SPREAD_AGGRESSIVE || p.blocks > 1 || tf_change < 0)
+            {
                 let eff = base.max((m * EBANDS[lowband_offset]).saturating_sub(n));
                 let mut fold_start = lowband_offset;
                 loop {
@@ -198,20 +214,64 @@ pub(crate) fn quant_all_bands<C: Coder>(
         let lowband_of = |buf: &Vec<f32>| lowband_at.map(|e: usize| buf[e..e + n].to_vec());
         let lowband_x = if C::ENCODE { None } else { lowband_of(&norm) };
         let xb = &mut x[o..o + n];
-        let out_x = if C::ENCODE { None } else { Some(&mut norm[o..o + n]) };
+        let out_x = if C::ENCODE {
+            None
+        } else {
+            Some(&mut norm[o..o + n])
+        };
         match y.as_deref_mut() {
             Some(yfull) if dual => {
                 let lowband_y = if C::ENCODE { None } else { lowband_of(&norm2) };
-                x_cm = ctx.mono_band(xb, b >> 1, p.blocks, lowband_x.as_deref(), lm, out_x, 1.0, x_cm);
-                let out_y = if C::ENCODE { None } else { Some(&mut norm2[o..o + n]) };
-                y_cm = ctx.mono_band(&mut yfull[o..o + n], b >> 1, p.blocks, lowband_y.as_deref(), lm, out_y, 1.0, y_cm);
+                x_cm = ctx.mono_band(
+                    xb,
+                    b >> 1,
+                    p.blocks,
+                    lowband_x.as_deref(),
+                    lm,
+                    out_x,
+                    1.0,
+                    x_cm,
+                );
+                let out_y = if C::ENCODE {
+                    None
+                } else {
+                    Some(&mut norm2[o..o + n])
+                };
+                y_cm = ctx.mono_band(
+                    &mut yfull[o..o + n],
+                    b >> 1,
+                    p.blocks,
+                    lowband_y.as_deref(),
+                    lm,
+                    out_y,
+                    1.0,
+                    y_cm,
+                );
             }
             Some(yfull) => {
-                x_cm = ctx.stereo_band(xb, &mut yfull[o..o + n], b, p.blocks, lowband_x.as_deref(), lm, out_x, x_cm | y_cm);
+                x_cm = ctx.stereo_band(
+                    xb,
+                    &mut yfull[o..o + n],
+                    b,
+                    p.blocks,
+                    lowband_x.as_deref(),
+                    lm,
+                    out_x,
+                    x_cm | y_cm,
+                );
                 y_cm = x_cm;
             }
             None => {
-                x_cm = ctx.mono_band(xb, b, p.blocks, lowband_x.as_deref(), lm, out_x, 1.0, x_cm | y_cm);
+                x_cm = ctx.mono_band(
+                    xb,
+                    b,
+                    p.blocks,
+                    lowband_x.as_deref(),
+                    lm,
+                    out_x,
+                    1.0,
+                    x_cm | y_cm,
+                );
                 y_cm = x_cm;
             }
         }
@@ -282,7 +342,8 @@ impl<C: Coder> Ctx<'_, C> {
             if let Some(l) = lb.as_deref_mut() {
                 haar(l, n >> k, 1 << k);
             }
-            fill = m.bit_interleave[(fill & 15) as usize] | m.bit_interleave[(fill >> 4) as usize] << 2;
+            fill = m.bit_interleave[(fill & 15) as usize]
+                | m.bit_interleave[(fill >> 4) as usize] << 2;
         }
         blocks >>= recombine;
         n_b <<= recombine;
@@ -340,7 +401,12 @@ impl<C: Coder> Ctx<'_, C> {
     }
 
     /// One-coefficient bands: just the signs (CELT_SPEC §8.2.1).
-    fn single(&mut self, x: &mut [f32], y: Option<&mut [f32]>, lowband_out: Option<&mut [f32]>) -> u32 {
+    fn single(
+        &mut self,
+        x: &mut [f32],
+        y: Option<&mut [f32]>,
+        lowband_out: Option<&mut [f32]>,
+    ) -> u32 {
         for v in std::iter::once(&mut *x).chain(y) {
             let mut sign = 0;
             if self.remaining_bits >= 1 << BITRES {
@@ -360,7 +426,16 @@ impl<C: Coder> Ctx<'_, C> {
     /// A mono partition at any level: split in halves while the budget
     /// exceeds the largest codebook, else PVQ (CELT_SPEC §8.2.3, §8.2.6,
     /// §8.2.7). `blocks` on entry is this call's B0.
-    fn partition(&mut self, x: &mut [f32], b: i32, blocks: usize, lowband: Option<&[f32]>, lm: i32, gain: f32, fill: u32) -> u32 {
+    fn partition(
+        &mut self,
+        x: &mut [f32],
+        b: i32,
+        blocks: usize,
+        lowband: Option<&[f32]>,
+        lm: i32,
+        gain: f32,
+        fill: u32,
+    ) -> u32 {
         let n = x.len();
         let b0 = blocks;
         let cache = mode().cache(self.band, lm);
@@ -400,9 +475,25 @@ impl<C: Coder> Ctx<'_, C> {
                 if rebalance > 3 << BITRES && th.itheta != 0 {
                     sbits += rebalance - (3 << BITRES);
                 }
-                cm_side = self.partition(xs, sbits, blocks, lb_side, lm, gain * side, th.fill >> blocks);
+                cm_side = self.partition(
+                    xs,
+                    sbits,
+                    blocks,
+                    lb_side,
+                    lm,
+                    gain * side,
+                    th.fill >> blocks,
+                );
             } else {
-                cm_side = self.partition(xs, sbits, blocks, lb_side, lm, gain * side, th.fill >> blocks);
+                cm_side = self.partition(
+                    xs,
+                    sbits,
+                    blocks,
+                    lb_side,
+                    lm,
+                    gain * side,
+                    th.fill >> blocks,
+                );
                 let rebalance = sbits - (r0 - self.remaining_bits);
                 if rebalance > 3 << BITRES && th.itheta != 16384 {
                     mbits += rebalance - (3 << BITRES);
@@ -444,7 +535,11 @@ impl<C: Coder> Ctx<'_, C> {
             Some(l) => {
                 for (v, &s) in x.iter_mut().zip(l) {
                     self.seed = lcg(self.seed);
-                    *v = s + if self.seed & 0x8000 != 0 { 1.0 / 256.0 } else { -1.0 / 256.0 };
+                    *v = s + if self.seed & 0x8000 != 0 {
+                        1.0 / 256.0
+                    } else {
+                        -1.0 / 256.0
+                    };
                 }
                 renormalise(x, gain);
                 fill
@@ -475,14 +570,24 @@ impl<C: Coder> Ctx<'_, C> {
         let side = th.iside as f32 / 32768.0;
         let cm;
         if n == 2 {
-            let sbits = if th.itheta != 0 && th.itheta != 16384 { 1 << BITRES } else { 0 };
+            let sbits = if th.itheta != 0 && th.itheta != 16384 {
+                1 << BITRES
+            } else {
+                0
+            };
             let mbits = b - sbits;
             self.remaining_bits -= th.qalloc + sbits;
             let swap = th.itheta > 8192;
-            let (x2, y2) = if swap { (&mut *y, &mut *x) } else { (&mut *x, &mut *y) };
+            let (x2, y2) = if swap {
+                (&mut *y, &mut *x)
+            } else {
+                (&mut *x, &mut *y)
+            };
             let mut sign = 0;
             if sbits > 0 {
-                sign = self.ec.bits(u32::from(x2[0] * y2[1] - x2[1] * y2[0] < 0.0), 1);
+                sign = self
+                    .ec
+                    .bits(u32::from(x2[0] * y2[1] - x2[1] * y2[0] < 0.0), 1);
             }
             cm = self.mono_band(x2, mbits, blocks, lowband, lm, lowband_out, 1.0, orig_fill);
             if C::ENCODE {
@@ -502,19 +607,23 @@ impl<C: Coder> Ctx<'_, C> {
             self.remaining_bits -= th.qalloc;
             let r0 = self.remaining_bits;
             if mbits >= sbits {
-                let cm_mid = self.mono_band(x, mbits, blocks, lowband, lm, lowband_out, 1.0, th.fill);
+                let cm_mid =
+                    self.mono_band(x, mbits, blocks, lowband, lm, lowband_out, 1.0, th.fill);
                 let rebalance = mbits - (r0 - self.remaining_bits);
                 if rebalance > 3 << BITRES && th.itheta != 0 {
                     sbits += rebalance - (3 << BITRES);
                 }
-                cm = cm_mid | self.mono_band(y, sbits, blocks, None, lm, None, side, th.fill >> blocks);
+                cm = cm_mid
+                    | self.mono_band(y, sbits, blocks, None, lm, None, side, th.fill >> blocks);
             } else {
-                let cm_side = self.mono_band(y, sbits, blocks, None, lm, None, side, th.fill >> blocks);
+                let cm_side =
+                    self.mono_band(y, sbits, blocks, None, lm, None, side, th.fill >> blocks);
                 let rebalance = sbits - (r0 - self.remaining_bits);
                 if rebalance > 3 << BITRES && th.itheta != 16384 {
                     mbits += rebalance - (3 << BITRES);
                 }
-                cm = cm_side | self.mono_band(x, mbits, blocks, lowband, lm, lowband_out, 1.0, th.fill);
+                cm = cm_side
+                    | self.mono_band(x, mbits, blocks, lowband, lm, lowband_out, 1.0, th.fill);
             }
             if C::ENCODE {
                 return cm;
@@ -534,10 +643,25 @@ impl<C: Coder> Ctx<'_, C> {
     /// the PDF, `blocks` (the current B) the fill masks. On the encoder,
     /// a stereo `x`, `y` (left, right) are replaced by mid and side, or by
     /// the intensity downmix when no angle is coded.
-    fn theta(&mut self, x: &mut [f32], y: &mut [f32], b: i32, b0: usize, blocks: usize, lm: i32, stereo: bool, fill: u32) -> Theta {
+    fn theta(
+        &mut self,
+        x: &mut [f32],
+        y: &mut [f32],
+        b: i32,
+        b0: usize,
+        blocks: usize,
+        lm: i32,
+        stereo: bool,
+        fill: u32,
+    ) -> Theta {
         let n = x.len() as i32;
         let pulse_cap = mode().log_n[self.band] + (lm << BITRES);
-        let offset = (pulse_cap >> 1) - if stereo && n == 2 { QTHETA_OFFSET_TWOPHASE } else { QTHETA_OFFSET };
+        let offset = (pulse_cap >> 1)
+            - if stereo && n == 2 {
+                QTHETA_OFFSET_TWOPHASE
+            } else {
+                QTHETA_OFFSET
+            };
         let mut qn = compute_qn(n, b, offset, pulse_cap, stereo);
         if stereo && self.band >= self.intensity {
             qn = 1;
@@ -554,7 +678,8 @@ impl<C: Coder> Ctx<'_, C> {
             let ex: f32 = x.iter().map(|v| v * v).sum();
             let ey: f32 = y.iter().map(|v| v * v).sum();
             let angle = ey.sqrt().atan2(ex.sqrt());
-            target = ((angle / std::f32::consts::FRAC_PI_2 * 16384.0).round() as i32).clamp(0, 16384);
+            target =
+                ((angle / std::f32::consts::FRAC_PI_2 * 16384.0).round() as i32).clamp(0, 16384);
         }
         let t0 = self.ec.tell_frac();
         let mut itheta = 0;
@@ -569,9 +694,17 @@ impl<C: Coder> Ctx<'_, C> {
                     q
                 } else {
                     let fs = self.ec.decode_fs(ft as u32) as i32;
-                    if fs < (x0 + 1) * 3 { fs / 3 } else { x0 + 1 + (fs - (x0 + 1) * 3) }
+                    if fs < (x0 + 1) * 3 {
+                        fs / 3
+                    } else {
+                        x0 + 1 + (fs - (x0 + 1) * 3)
+                    }
                 };
-                let (fl, fh) = if v <= x0 { (3 * v, 3 * (v + 1)) } else { (v - 1 - x0 + (x0 + 1) * 3, v - x0 + (x0 + 1) * 3) };
+                let (fl, fh) = if v <= x0 {
+                    (3 * v, 3 * (v + 1))
+                } else {
+                    (v - 1 - x0 + (x0 + 1) * 3, v - x0 + (x0 + 1) * 3)
+                };
                 self.ec.code(fl as u32, fh as u32, ft as u32);
                 v
             } else if b0 > 1 || stereo {
@@ -590,14 +723,19 @@ impl<C: Coder> Ctx<'_, C> {
                         (2 * (qn + 1) - isqrt(8 * (ft - fm - 1) as u32 + 1) as i32) >> 1
                     }
                 };
-                let (fl, fs) = if v <= h { ((v * (v + 1)) >> 1, v + 1) } else { (ft - (((qn + 1 - v) * (qn + 2 - v)) >> 1), qn + 1 - v) };
+                let (fl, fs) = if v <= h {
+                    ((v * (v + 1)) >> 1, v + 1)
+                } else {
+                    (ft - (((qn + 1 - v) * (qn + 2 - v)) >> 1), qn + 1 - v)
+                };
                 self.ec.code(fl as u32, (fl + fs) as u32, ft as u32);
                 v
             };
             itheta = itheta * 16384 / qn;
         } else if stereo {
             if b > 2 << BITRES && self.remaining_bits > 2 << BITRES {
-                let want = C::ENCODE && x.iter().zip(y.iter()).map(|(l, r)| l * r).sum::<f32>() < 0.0;
+                let want =
+                    C::ENCODE && x.iter().zip(y.iter()).map(|(l, r)| l * r).sum::<f32>() < 0.0;
                 inv = self.ec.bit_logp(want, 2);
             }
             if C::ENCODE {
@@ -617,10 +755,23 @@ impl<C: Coder> Ctx<'_, C> {
             _ => {
                 let imid = cosx(itheta);
                 let iside = cosx(16384 - itheta);
-                (imid, iside, frac_mul16((n - 1) << 7, log2tan(iside, imid)), fill)
+                (
+                    imid,
+                    iside,
+                    frac_mul16((n - 1) << 7, log2tan(iside, imid)),
+                    fill,
+                )
             }
         };
-        Theta { itheta, qalloc, imid, iside, delta, inv, fill }
+        Theta {
+            itheta,
+            qalloc,
+            imid,
+            iside,
+            delta,
+            inv,
+            fill,
+        }
     }
 
     /// PVQ with `k` pulses (CELT_SPEC §8.3): the encoder searches and codes
@@ -654,7 +805,9 @@ impl<C: Coder> Ctx<'_, C> {
             return 1;
         }
         let n0 = n / blocks;
-        (0..blocks).filter(|&bk| yv[bk * n0..(bk + 1) * n0].iter().any(|&v| v != 0)).fold(0, |cm, bk| cm | 1 << bk)
+        (0..blocks)
+            .filter(|&bk| yv[bk * n0..(bk + 1) * n0].iter().any(|&v| v != 0))
+            .fold(0, |cm, bk| cm | 1 << bk)
     }
 }
 
@@ -664,7 +817,9 @@ fn compute_qn(n: i32, b: i32, offset: i32, pulse_cap: i32, stereo: bool) -> i32 
     if stereo && n == 2 {
         n2 -= 1;
     }
-    let qb = (b - pulse_cap - (4 << BITRES)).min((b + n2 * offset) / n2).min(8 << BITRES);
+    let qb = (b - pulse_cap - (4 << BITRES))
+        .min((b + n2 * offset) / n2)
+        .min(8 << BITRES);
     if qb < (1 << BITRES >> 1) {
         return 1;
     }
@@ -690,7 +845,8 @@ fn log2tan(s: i32, c: i32) -> i32 {
     let ls = 32 - (s as u32).leading_zeros() as i32;
     let c = c << (15 - lc);
     let s = s << (15 - ls);
-    (ls - lc) * 2048 + frac_mul16(s, frac_mul16(s, -2597) + 7932) - frac_mul16(c, frac_mul16(c, -2597) + 7932)
+    (ls - lc) * 2048 + frac_mul16(s, frac_mul16(s, -2597) + 7932)
+        - frac_mul16(c, frac_mul16(c, -2597) + 7932)
 }
 
 /// ⌊√x⌋, exact.
@@ -725,7 +881,13 @@ fn haar(v: &mut [f32], n: usize, stride: usize) {
 /// The block order of `deinterleave` (CELT_SPEC §8.2.2).
 fn block_order(stride: usize, hadamard: bool) -> impl Fn(usize) -> usize {
     let m = mode();
-    move |i| if hadamard { m.ordery[stride - 2 + i] } else { i }
+    move |i| {
+        if hadamard {
+            m.ordery[stride - 2 + i]
+        } else {
+            i
+        }
+    }
 }
 
 /// Coefficients interleaved by block become contiguous per block
@@ -933,7 +1095,10 @@ mod tests {
     fn isqrt_is_exact() {
         for x in (0..100_000u32).chain([u32::MAX, u32::MAX - 1, 1 << 30]) {
             let r = isqrt(x);
-            assert!(u64::from(r) * u64::from(r) <= u64::from(x) && u64::from(r + 1) * u64::from(r + 1) > u64::from(x));
+            assert!(
+                u64::from(r) * u64::from(r) <= u64::from(x)
+                    && u64::from(r + 1) * u64::from(r + 1) > u64::from(x)
+            );
         }
     }
 
@@ -941,7 +1106,10 @@ mod tests {
     fn cosx_and_log2tan_ranges() {
         for x in 1..16384 {
             let c = cosx(x);
-            assert!((200..=32767).contains(&c) || !(64..=16320).contains(&x), "cosx({x}) = {c}");
+            assert!(
+                (200..=32767).contains(&c) || !(64..=16320).contains(&x),
+                "cosx({x}) = {c}"
+            );
         }
         assert!(log2tan(32767, 200).abs() <= 15059);
     }

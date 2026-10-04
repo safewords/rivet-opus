@@ -19,11 +19,17 @@ pub(crate) struct Complex {
 impl Complex {
     #[inline]
     fn mul(self, o: Complex) -> Complex {
-        Complex { re: self.re * o.re - self.im * o.im, im: self.re * o.im + self.im * o.re }
+        Complex {
+            re: self.re * o.re - self.im * o.im,
+            im: self.re * o.im + self.im * o.re,
+        }
     }
     #[inline]
     fn add(self, o: Complex) -> Complex {
-        Complex { re: self.re + o.re, im: self.im + o.im }
+        Complex {
+            re: self.re + o.re,
+            im: self.im + o.im,
+        }
     }
 }
 
@@ -45,23 +51,35 @@ pub(crate) struct Fft {
 }
 
 fn unit(a: f64) -> Complex {
-    Complex { re: a.cos() as f32, im: a.sin() as f32 }
+    Complex {
+        re: a.cos() as f32,
+        im: a.sin() as f32,
+    }
 }
 
 /// `-i·z`.
 #[inline(always)]
 fn mul_neg_i(z: Complex) -> Complex {
-    Complex { re: z.im, im: -z.re }
+    Complex {
+        re: z.im,
+        im: -z.re,
+    }
 }
 
 #[inline(always)]
 fn sub(a: Complex, b: Complex) -> Complex {
-    Complex { re: a.re - b.re, im: a.im - b.im }
+    Complex {
+        re: a.re - b.re,
+        im: a.im - b.im,
+    }
 }
 
 #[inline(always)]
 fn scale(a: Complex, f: f32) -> Complex {
-    Complex { re: a.re * f, im: a.im * f }
+    Complex {
+        re: a.re * f,
+        im: a.im * f,
+    }
 }
 
 /// The largest FFT the codec runs (the 960-coefficient MDCT's), whose
@@ -86,7 +104,9 @@ impl Fft {
             let mut tw = Vec::with_capacity(m * (p - 1));
             for q in 0..m {
                 for t in 1..p {
-                    tw.push(unit(-2.0 * std::f64::consts::PI * (q * t) as f64 / len as f64));
+                    tw.push(unit(
+                        -2.0 * std::f64::consts::PI * (q * t) as f64 / len as f64,
+                    ));
                 }
             }
             passes.push(Pass { p, m, s, tw });
@@ -230,16 +250,27 @@ impl Mdct {
         let pre = (0..n / 2)
             .map(|i| {
                 let a = -std::f64::consts::PI * i as f64 / n as f64;
-                Complex { re: a.cos() as f32, im: a.sin() as f32 }
+                Complex {
+                    re: a.cos() as f32,
+                    im: a.sin() as f32,
+                }
             })
             .collect();
         let post = (0..n / 2)
             .map(|k| {
                 let a = -std::f64::consts::PI * (k as f64 + 0.25) / n as f64;
-                Complex { re: a.cos() as f32, im: a.sin() as f32 }
+                Complex {
+                    re: a.cos() as f32,
+                    im: a.sin() as f32,
+                }
             })
             .collect();
-        Self { n, fft: Fft::new(n / 2), pre, post }
+        Self {
+            n,
+            fft: Fft::new(n / 2),
+            pre,
+            post,
+        }
     }
 
     /// `out[k] = sum_n v[n] cos(pi/N (n + 1/2)(k + 1/2))`.
@@ -250,7 +281,11 @@ impl Mdct {
         let mut zf = [Complex::default(); MAX_MDCT / 2];
         let (z, zf) = (&mut z[..h], &mut zf[..h]);
         for (i, zi) in z.iter_mut().enumerate() {
-            *zi = Complex { re: v[2 * i], im: v[n - 1 - 2 * i] }.mul(self.pre[i]);
+            *zi = Complex {
+                re: v[2 * i],
+                im: v[n - 1 - 2 * i],
+            }
+            .mul(self.pre[i]);
         }
         self.fft.process(z, zf);
         for k in 0..h {
@@ -299,7 +334,9 @@ mod tests {
                 (0..2 * n)
                     .map(|i| {
                         f64::from(x[i])
-                            * (std::f64::consts::PI / n as f64 * (i as f64 + 0.5 + n as f64 / 2.0) * (k as f64 + 0.5))
+                            * (std::f64::consts::PI / n as f64
+                                * (i as f64 + 0.5 + n as f64 / 2.0)
+                                * (k as f64 + 0.5))
                                 .cos()
                     })
                     .sum()
@@ -322,7 +359,12 @@ mod tests {
         for n in [1usize, 2, 3, 4, 5, 6, 8, 15, 60, 120, 240, 480] {
             let re = noise(n, 7);
             let im = noise(n, 9);
-            let x: Vec<Complex> = (0..n).map(|i| Complex { re: re[i], im: im[i] }).collect();
+            let x: Vec<Complex> = (0..n)
+                .map(|i| Complex {
+                    re: re[i],
+                    im: im[i],
+                })
+                .collect();
             let mut out = vec![Complex::default(); n];
             Fft::new(n).process(&x, &mut out);
             for k in 0..n {
@@ -332,7 +374,11 @@ mod tests {
                     sr += f64::from(v.re) * a.cos() - f64::from(v.im) * a.sin();
                     si += f64::from(v.re) * a.sin() + f64::from(v.im) * a.cos();
                 }
-                assert!((sr - f64::from(out[k].re)).abs() < 1e-3 && (si - f64::from(out[k].im)).abs() < 1e-3, "n {n} k {k}");
+                assert!(
+                    (sr - f64::from(out[k].re)).abs() < 1e-3
+                        && (si - f64::from(out[k].im)).abs() < 1e-3,
+                    "n {n} k {k}"
+                );
             }
         }
     }
@@ -348,7 +394,12 @@ mod tests {
             let slow = direct_mdct(&x, n);
             let scale = (n as f64).sqrt();
             for k in 0..n {
-                assert!((slow[k] - f64::from(fast[k])).abs() < 2e-4 * scale, "n {n} k {k}: {} vs {}", slow[k], fast[k]);
+                assert!(
+                    (slow[k] - f64::from(fast[k])).abs() < 2e-4 * scale,
+                    "n {n} k {k}: {} vs {}",
+                    slow[k],
+                    fast[k]
+                );
             }
             // Inverse against its definition.
             let coefs = noise(n, 3 + n as u32);
@@ -358,11 +409,16 @@ mod tests {
                 let d: f64 = (0..n)
                     .map(|k| {
                         f64::from(coefs[k])
-                            * (std::f64::consts::PI / n as f64 * (i as f64 + 0.5 + n as f64 / 2.0) * (k as f64 + 0.5))
+                            * (std::f64::consts::PI / n as f64
+                                * (i as f64 + 0.5 + n as f64 / 2.0)
+                                * (k as f64 + 0.5))
                                 .cos()
                     })
                     .sum();
-                assert!((d - f64::from(yi)).abs() < 2e-4 * scale, "inverse n {n} i {i}");
+                assert!(
+                    (d - f64::from(yi)).abs() < 2e-4 * scale,
+                    "inverse n {n} i {i}"
+                );
             }
         }
     }
@@ -373,8 +429,9 @@ mod tests {
     fn tdac_reconstructs() {
         let n = 120;
         let m = Mdct::new(n);
-        let w: Vec<f32> =
-            (0..2 * n).map(|i| (std::f32::consts::PI * (i as f32 + 0.5) / (2 * n) as f32).sin()).collect();
+        let w: Vec<f32> = (0..2 * n)
+            .map(|i| (std::f32::consts::PI * (i as f32 + 0.5) / (2 * n) as f32).sin())
+            .collect();
         let x = noise(6 * n, 5);
         let mut acc = vec![0.0f32; 6 * n];
         for b in 0..5 {

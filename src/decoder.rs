@@ -43,10 +43,14 @@ impl Decoder {
     /// `sample_rate` (8, 12, 16, 24 or 48 kHz).
     pub fn new(sample_rate: u32, channels: usize) -> Result<Self> {
         if !SAMPLE_RATES.contains(&sample_rate) {
-            return Err(config(format!("sample rate {sample_rate} is not one of 8, 12, 16, 24 or 48 kHz")));
+            return Err(config(format!(
+                "sample rate {sample_rate} is not one of 8, 12, 16, 24 or 48 kHz"
+            )));
         }
         if !(1..=2).contains(&channels) {
-            return Err(config(format!("{channels} channels: a single Opus stream has 1 or 2")));
+            return Err(config(format!(
+                "{channels} channels: a single Opus stream has 1 or 2"
+            )));
         }
         Ok(Self {
             fs: sample_rate,
@@ -118,9 +122,17 @@ impl Decoder {
             Some(data) => {
                 let p = packet::parse(data)?;
                 let toc = p.toc;
-                let mut out = Vec::with_capacity(p.samples() * self.channels * self.fs as usize / 48000);
+                let mut out =
+                    Vec::with_capacity(p.samples() * self.channels * self.fs as usize / 48000);
                 for frame in &p.frames {
-                    let pcm = self.decode_frame(Some(frame), toc.mode(), toc.bandwidth(), toc.frame_size(), toc.stereo, false);
+                    let pcm = self.decode_frame(
+                        Some(frame),
+                        toc.mode(),
+                        toc.bandwidth(),
+                        toc.frame_size(),
+                        toc.stereo,
+                        false,
+                    );
                     out.extend_from_slice(&pcm);
                 }
                 self.last_duration = p.samples();
@@ -142,7 +154,14 @@ impl Decoder {
         if toc.mode() == Mode::Celt || first.is_empty() || self.prev_mode.is_none() {
             return Ok(self.conceal(n));
         }
-        let pcm = self.decode_frame(Some(first), toc.mode(), toc.bandwidth(), n, toc.stereo, true);
+        let pcm = self.decode_frame(
+            Some(first),
+            toc.mode(),
+            toc.bandwidth(),
+            n,
+            toc.stereo,
+            true,
+        );
         self.last_duration = n;
         Ok(pcm)
     }
@@ -154,7 +173,11 @@ impl Decoder {
         while left > 0 {
             let chunk = match self.prev_mode {
                 Some(Mode::Silk) | Some(Mode::Hybrid) => {
-                    if left >= 960 { 960 } else { 480 }
+                    if left >= 960 {
+                        960
+                    } else {
+                        480
+                    }
                 }
                 _ => {
                     let mut c = 960;
@@ -164,7 +187,14 @@ impl Decoder {
                     c
                 }
             };
-            let pcm = self.decode_frame(None, self.prev_mode.unwrap_or(Mode::Celt), self.last_bw, chunk, self.last_stereo, false);
+            let pcm = self.decode_frame(
+                None,
+                self.prev_mode.unwrap_or(Mode::Celt),
+                self.last_bw,
+                chunk,
+                self.last_stereo,
+                false,
+            );
             let take = chunk.min(left) * self.channels * self.fs as usize / 48000;
             out.extend_from_slice(&pcm[..take.min(pcm.len())]);
             left = left.saturating_sub(chunk);
@@ -176,9 +206,14 @@ impl Decoder {
     fn silk_to_pcm(&mut self, chans: Vec<Vec<f32>>, out: &mut [f32]) {
         let fs_khz = self.silk.fs_khz();
         let in_rate = fs_khz * 1000;
-        if self.resamplers.first().is_none_or(|r| r.in_rate() != in_rate) {
-            self.resamplers =
-                (0..self.channels).map(|_| Resampler::new(in_rate, self.fs as usize, silk_delay_ms(fs_khz))).collect();
+        if self
+            .resamplers
+            .first()
+            .is_none_or(|r| r.in_rate() != in_rate)
+        {
+            self.resamplers = (0..self.channels)
+                .map(|_| Resampler::new(in_rate, self.fs as usize, silk_delay_ms(fs_khz)))
+                .collect();
         }
         let cc = self.channels;
         for (c, ch) in chans.iter().enumerate() {
@@ -220,13 +255,21 @@ impl Decoder {
         let transition = !lost
             && !fec
             && self.prev_mode.is_some_and(|pm| {
-                (mode == Mode::Celt && pm != Mode::Celt && !self.prev_redundancy) || (mode != Mode::Celt && pm == Mode::Celt)
+                (mode == Mode::Celt && pm != Mode::Celt && !self.prev_redundancy)
+                    || (mode != Mode::Celt && pm == Mode::Celt)
             });
         // Into CELT, the old mode's concealment comes first; out of CELT it
         // is only needed when the frame carries no redundancy (decided
         // below).
         let mut pcm_transition = if transition && mode == Mode::Celt {
-            Some(self.decode_frame(None, self.prev_mode.unwrap_or(Mode::Silk), self.last_bw, 480, self.last_stereo, false))
+            Some(self.decode_frame(
+                None,
+                self.prev_mode.unwrap_or(Mode::Silk),
+                self.last_bw,
+                480,
+                self.last_stereo,
+                false,
+            ))
         } else {
             None
         };
@@ -238,9 +281,20 @@ impl Decoder {
                     r.reset();
                 }
             }
-            let silk_bw = if mode == Mode::Hybrid { Bandwidth::Wide } else { bw };
+            let silk_bw = if mode == Mode::Hybrid {
+                Bandwidth::Wide
+            } else {
+                bw
+            };
             let frame_ms = n48 / 48;
-            let chans = self.silk.decode(ec_store.as_mut(), stereo, silk_bw, frame_ms.max(10), cc, fec);
+            let chans = self.silk.decode(
+                ec_store.as_mut(),
+                stereo,
+                silk_bw,
+                frame_ms.max(10),
+                cc,
+                fec,
+            );
             self.silk_to_pcm(chans, &mut pcm);
         }
         // §4.5.1: redundancy.
@@ -278,7 +332,14 @@ impl Decoder {
             }
         }
         if transition && mode != Mode::Celt && !redundancy {
-            pcm_transition = Some(self.decode_frame(None, Mode::Celt, self.last_bw, 240, self.last_stereo, false));
+            pcm_transition = Some(self.decode_frame(
+                None,
+                Mode::Celt,
+                self.last_bw,
+                240,
+                self.last_stereo,
+                false,
+            ));
         }
         let start_band = if mode == Mode::Hybrid { 17 } else { 0 };
         let end_band = bw.celt_end_band();
@@ -288,7 +349,8 @@ impl Decoder {
         if redundancy && celt_to_silk {
             let mut red = vec![0.0f32; f5 * cc];
             let mut rec = RangeDecoder::new(red_slice.unwrap_or(&[]));
-            self.celt.decode(&mut rec, 240, stream_c, 0, end_band, &mut red, false);
+            self.celt
+                .decode(&mut rec, 240, stream_c, 0, end_band, &mut red, false);
             redundant_rng = rec.range();
             redundant_audio = red;
         }
@@ -300,17 +362,29 @@ impl Decoder {
             let accumulate = mode == Mode::Hybrid;
             match (ec_store.as_mut(), fec) {
                 (Some(ec), false) => {
-                    self.celt.decode(ec, n48.min(960), stream_c, start_band, end_band, &mut pcm, accumulate);
+                    self.celt.decode(
+                        ec,
+                        n48.min(960),
+                        stream_c,
+                        start_band,
+                        end_band,
+                        &mut pcm,
+                        accumulate,
+                    );
                 }
                 _ => self.celt.decode_lost(n48.min(960), &mut pcm, accumulate),
             }
-        } else if !lost && self.prev_mode == Some(Mode::Hybrid) && !(redundancy && celt_to_silk && self.prev_redundancy) {
+        } else if !lost
+            && self.prev_mode == Some(Mode::Hybrid)
+            && !(redundancy && celt_to_silk && self.prev_redundancy)
+        {
             // §4.5: Hybrid to SILK lets the CELT overlap fade out by decoding
             // a 2.5 ms silence frame.
             let silence = [0xFFu8, 0xFF];
             let mut sec = RangeDecoder::new(&silence);
             let mut tail = vec![0.0f32; f2_5 * cc];
-            self.celt.decode(&mut sec, 120, stream_c, 0, end_band, &mut tail, false);
+            self.celt
+                .decode(&mut sec, 120, stream_c, 0, end_band, &mut tail, false);
             for (o, t) in pcm.iter_mut().zip(&tail) {
                 *o += t;
             }
@@ -329,7 +403,8 @@ impl Decoder {
             self.celt.reset();
             let mut red = vec![0.0f32; f5 * cc];
             let mut rec = RangeDecoder::new(red_slice.unwrap_or(&[]));
-            self.celt.decode(&mut rec, 240, stream_c, 0, end_band, &mut red, false);
+            self.celt
+                .decode(&mut rec, 240, stream_c, 0, end_band, &mut red, false);
             redundant_rng = rec.range();
             if n >= f2_5 {
                 let at = (n - f2_5) * cc;
@@ -340,7 +415,11 @@ impl Decoder {
         if redundancy && celt_to_silk && n >= f5 {
             pcm[..f2_5 * cc].copy_from_slice(&redundant_audio[..f2_5 * cc]);
             let b = pcm[f2_5 * cc..f5 * cc].to_vec();
-            fade(&redundant_audio[f2_5 * cc..], &b, &mut pcm[f2_5 * cc..f5 * cc]);
+            fade(
+                &redundant_audio[f2_5 * cc..],
+                &b,
+                &mut pcm[f2_5 * cc..f5 * cc],
+            );
         }
         if let Some(t) = pcm_transition {
             if n >= f5 {

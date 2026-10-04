@@ -16,7 +16,10 @@
 mod common;
 
 use common::Lcg;
-use opus::{Application, Decoder, Encoder, EncoderConfig, Mode, MultistreamDecoder, MultistreamEncoder, OpusHead};
+use opus::{
+    Application, Decoder, Encoder, EncoderConfig, Mode, MultistreamDecoder, MultistreamEncoder,
+    OpusHead,
+};
 use std::f32::consts::PI;
 
 const LEVEL: f32 = 0.25;
@@ -49,11 +52,21 @@ fn db(x: f32) -> f32 {
 fn signal(fl: f32, fr: f32, noise: bool) -> Vec<f32> {
     let n = (48_000.0 * SECONDS) as usize;
     let (mut gl, mut gr) = (Lcg(1), Lcg(2));
-    let tone = |f: f32, t: f32| if f > 0.0 { LEVEL * (2.0 * PI * f * t).sin() } else { 0.0 };
+    let tone = |f: f32, t: f32| {
+        if f > 0.0 {
+            LEVEL * (2.0 * PI * f * t).sin()
+        } else {
+            0.0
+        }
+    };
     let mut out = Vec::with_capacity(2 * n);
     for i in 0..n {
         let t = i as f32 / 48_000.0;
-        let (nl, nr) = if noise { (0.025 * gl.next_f32(), 0.025 * gr.next_f32()) } else { (0.0, 0.0) };
+        let (nl, nr) = if noise {
+            (0.025 * gl.next_f32(), 0.025 * gr.next_f32())
+        } else {
+            (0.0, 0.0)
+        };
         out.push(tone(fl, t) + nl);
         out.push(tone(fr, t) + nr);
     }
@@ -105,7 +118,11 @@ fn cfg(bitrate: u32, frame_size: usize, mode: Option<Mode>) -> EncoderConfig {
         bitrate,
         frame_size,
         mode,
-        application: if mode == Some(Mode::Hybrid) { Application::Voip } else { Application::Audio },
+        application: if mode == Some(Mode::Hybrid) {
+            Application::Voip
+        } else {
+            Application::Audio
+        },
         ..EncoderConfig::default()
     }
 }
@@ -126,7 +143,9 @@ fn separation_table() {
         (2900.0, 3100.0, false, "2.9k/3.1k"),
         (440.0, 660.0, true, "440/660+noise"),
     ];
-    let rates = [24_000, 32_000, 48_000, 64_000, 96_000, COUPLED_51, 128_000, 192_000, 256_000];
+    let rates = [
+        24_000, 32_000, 48_000, 64_000, 96_000, COUPLED_51, 128_000, 192_000, 256_000,
+    ];
     let variants: [(&str, usize, Option<Mode>); 5] = [
         ("auto 20 ms", 960, None),
         ("CELT 10 ms", 480, Some(Mode::Celt)),
@@ -134,7 +153,9 @@ fn separation_table() {
         ("CELT 40 ms", 1920, Some(Mode::Celt)),
         ("hybrid 20 ms", 960, Some(Mode::Hybrid)),
     ];
-    eprintln!("leak with both tones / with the other side silent, dB re the tone; noise case: / input's own level");
+    eprintln!(
+        "leak with both tones / with the other side silent, dB re the tone; noise case: / input's own level"
+    );
     for (vname, frame, mode) in variants {
         eprint!("\n{vname:>12} kb/s");
         for p in pairs {
@@ -162,15 +183,21 @@ fn separation_table() {
 #[test]
 #[ignore = "a report; run with --ignored --nocapture"]
 fn hybrid_separation_table() {
-    let pairs: [(f32, f32, &str); 4] =
-        [(440.0, 660.0, "440/660"), (400.0, 600.0, "400/600"), (1000.0, 1200.0, "1000/1200"), (3000.0, 5000.0, "3k/5k")];
+    let pairs: [(f32, f32, &str); 4] = [
+        (440.0, 660.0, "440/660"),
+        (400.0, 600.0, "400/600"),
+        (1000.0, 1200.0, "1000/1200"),
+        (3000.0, 5000.0, "3k/5k"),
+    ];
     eprintln!("hybrid 20 ms: leak with both tones / with the other side silent, dB re the tone");
     eprint!("{:>10}", "kb/s");
     for p in pairs {
         eprint!(" | {:>13}", p.2);
     }
     eprintln!();
-    for r in [16_000, 20_000, 24_000, 28_000, 32_000, 40_000, 48_000, 64_000] {
+    for r in [
+        16_000, 20_000, 24_000, 28_000, 32_000, 40_000, 48_000, 64_000,
+    ] {
         eprint!("{:>10.1}", r as f32 / 1000.0);
         for (fl, fr, _) in pairs {
             match leak(cfg(r, 960, Some(Mode::Hybrid)), fl, fr, false) {
@@ -191,12 +218,16 @@ fn hybrid_separation_table() {
 fn hybrid_hard_panned_tones_stay_apart() {
     let mut failures = Vec::new();
     for rate in [32_000, 40_000, 48_000, 64_000] {
-        let l = leak(cfg(rate, 960, Some(Mode::Hybrid)), 440.0, 660.0, false).expect("final ranges agree");
+        let l = leak(cfg(rate, 960, Some(Mode::Hybrid)), 440.0, 660.0, false)
+            .expect("final ranges agree");
         if l.both > -20.0 {
             failures.push(format!("{rate} b/s: {:.1} dB", l.both));
         }
     }
-    assert!(failures.is_empty(), "hybrid crosstalk above -20 dB: {failures:#?}");
+    assert!(
+        failures.is_empty(),
+        "hybrid crosstalk above -20 dB: {failures:#?}"
+    );
 }
 
 /// rivet's 5.1 test: FL FR FC LFE BL BR carry 400, 600, 800, 50, 1000 and
@@ -206,15 +237,20 @@ fn hybrid_hard_panned_tones_stay_apart() {
 fn surround_51(report: bool) -> [f32; 6] {
     let tones = [400.0f32, 800.0, 600.0, 1000.0, 1200.0, 50.0];
     let names = ["FL", "FC", "FR", "BL", "BR", "LFE"];
-    let cfg = EncoderConfig { channels: 6, bitrate: 320_000, ..EncoderConfig::default() };
+    let cfg = EncoderConfig {
+        channels: 6,
+        bitrate: 320_000,
+        ..EncoderConfig::default()
+    };
     let mut enc = MultistreamEncoder::new(cfg).unwrap();
     let head = OpusHead::parse(&enc.head().to_bytes()).unwrap();
     let mut dec = MultistreamDecoder::from_head(&head, 48_000).unwrap();
     let n = enc.frame_samples();
     let mut out = Vec::new();
     for k in 0..(48_000.0 * SECONDS) as usize / n {
-        let pcm: Vec<f32> =
-            (0..n * 6).map(|i| LEVEL * (2.0 * PI * tones[i % 6] * ((k * n + i / 6) as f32 / 48_000.0)).sin()).collect();
+        let pcm: Vec<f32> = (0..n * 6)
+            .map(|i| LEVEL * (2.0 * PI * tones[i % 6] * ((k * n + i / 6) as f32 / 48_000.0)).sin())
+            .collect();
         out.extend(dec.decode(Some(&enc.encode(&pcm).unwrap())).unwrap());
         assert_eq!(dec.final_range(), enc.final_range());
     }
@@ -224,7 +260,10 @@ fn surround_51(report: bool) -> [f32; 6] {
             if o != c {
                 let l = db(amplitude(&out, 6, c, f));
                 if report {
-                    eprintln!("5.1: {} carries {}'s {f} Hz at {l:.1} dB", names[c], names[o]);
+                    eprintln!(
+                        "5.1: {} carries {}'s {f} Hz at {l:.1} dB",
+                        names[c], names[o]
+                    );
                 }
                 worst[c] = worst[c].max(l);
             }
@@ -266,5 +305,8 @@ fn hard_panned_tones_stay_apart() {
 #[test]
 fn surround_51_channels_stay_apart() {
     let w = surround_51(false);
-    assert!(w.iter().all(|&l| l < -30.0), "worst leak per channel (FL FC FR BL BR LFE): {w:.1?}");
+    assert!(
+        w.iter().all(|&l| l < -30.0),
+        "worst leak per channel (FL FC FR BL BR LFE): {w:.1?}"
+    );
 }

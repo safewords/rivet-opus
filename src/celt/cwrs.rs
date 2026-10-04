@@ -57,7 +57,11 @@ impl Shared {
         (n <= TABLE_N && k <= TABLE_K).then(|| {
             T.get_or_init(|| {
                 let t = table(TABLE_N, TABLE_K);
-                Shared { v: t.iter().map(|&x| u32::try_from(x).unwrap_or(SATURATED)).collect() }
+                Shared {
+                    v: t.iter()
+                        .map(|&x| u32::try_from(x).unwrap_or(SATURATED))
+                        .collect(),
+                }
             })
         })
     }
@@ -76,7 +80,9 @@ fn table(n: usize, k: usize) -> Vec<u64> {
     for i in 1..=n {
         t[i * w] = 1;
         for j in 1..=k {
-            t[i * w + j] = t[(i - 1) * w + j].saturating_add(t[i * w + j - 1]).saturating_add(t[(i - 1) * w + j - 1]);
+            t[i * w + j] = t[(i - 1) * w + j]
+                .saturating_add(t[i * w + j - 1])
+                .saturating_add(t[(i - 1) * w + j - 1]);
         }
     }
     t
@@ -173,7 +179,9 @@ mod tests {
         }
         for n in 1..9u64 {
             for k in 1..9u64 {
-                let direct: u64 = (1..=n.min(k)).map(|m| (1 << m) * c(n, m) * c(k - 1, m - 1)).sum();
+                let direct: u64 = (1..=n.min(k))
+                    .map(|m| (1 << m) * c(n, m) * c(k - 1, m - 1))
+                    .sum();
                 assert_eq!(v(n as usize, k as usize), direct, "V({n},{k})");
             }
         }
@@ -210,7 +218,10 @@ mod tests {
                 for i in 0..total {
                     let mut y = vec![0; n];
                     decode(i, n, k, &mut y);
-                    assert_eq!(y.iter().map(|x| x.unsigned_abs() as usize).sum::<usize>(), k);
+                    assert_eq!(
+                        y.iter().map(|x| x.unsigned_abs() as usize).sum::<usize>(),
+                        k
+                    );
                     assert!(seen.insert(y.clone()), "duplicate {y:?}");
                     assert_eq!(encode(&y, k), i, "N={n} K={k} y={y:?}");
                 }
@@ -222,13 +233,26 @@ mod tests {
     #[test]
     fn large_codebooks_round_trip() {
         let mut seed = 12345u32;
-        for &(n, k) in &[(176usize, 3usize), (16, 30), (8, 128), (2, 128), (40, 12), (3, 1000)] {
+        for &(n, k) in &[
+            (176usize, 3usize),
+            (16, 30),
+            (8, 128),
+            (2, 128),
+            (40, 12),
+            (3, 1000),
+        ] {
             for _ in 0..50 {
                 let mut y = vec![0i32; n];
                 for _ in 0..k {
                     seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
                     let pos = (seed >> 8) as usize % n;
-                    let s = if y[pos] != 0 { y[pos].signum() } else if seed & 1 == 0 { 1 } else { -1 };
+                    let s = if y[pos] != 0 {
+                        y[pos].signum()
+                    } else if seed & 1 == 0 {
+                        1
+                    } else {
+                        -1
+                    };
                     y[pos] += s;
                 }
                 if v(n, k) > u64::from(u32::MAX) {

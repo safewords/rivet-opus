@@ -113,7 +113,11 @@ impl<'a> RangeDecoder<'a> {
     pub fn update(&mut self, fl: u32, fh: u32, ft: u32) {
         let s = self.ext * (ft - fh);
         self.val -= s;
-        self.rng = if fl > 0 { self.ext * (fh - fl) } else { self.rng - s };
+        self.rng = if fl > 0 {
+            self.ext * (fh - fl)
+        } else {
+            self.rng - s
+        };
         self.normalize();
     }
 
@@ -683,7 +687,11 @@ mod tests {
                     Op::Uint(t, ft) => assert_eq!(dec.uint(ft), t),
                     Op::Bits(v, n) => assert_eq!(dec.bits(n), v),
                 }
-                assert_eq!((dec.range(), dec.tell_frac()), trace[i], "seed {seed} op {i}");
+                assert_eq!(
+                    (dec.range(), dec.tell_frac()),
+                    trace[i],
+                    "seed {seed} op {i}"
+                );
             }
             assert_eq!(dec.range(), final_range);
             assert!(!dec.error());

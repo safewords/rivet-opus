@@ -72,7 +72,13 @@ impl CeltEncoder {
     /// The symbol order and every gate follow the decoder (CELT_SPEC §1.2,
     /// §12); the procedures shared with the decoder (energy, allocation,
     /// TF, band shapes) code everything the decoder parses.
-    pub fn encode(&mut self, pcm: &[f32], n: usize, enc: &mut RangeEncoder, cfg: FrameConfig) -> bool {
+    pub fn encode(
+        &mut self,
+        pcm: &[f32],
+        n: usize,
+        enc: &mut RangeEncoder,
+        cfg: FrameConfig,
+    ) -> bool {
         let c = self.channels;
         let lm = match n {
             120 => 0,
@@ -134,13 +140,19 @@ impl CeltEncoder {
             self.detect_transient(&x, n);
         }
         let blocks = if transient { mm } else { 1 };
-        let coefs: Vec<Vec<f32>> = x.iter().map(|xc| self.synth.mdct_blocks(xc, n, blocks)).collect();
+        let coefs: Vec<Vec<f32>> = x
+            .iter()
+            .map(|xc| self.synth.mdct_blocks(xc, n, blocks))
+            .collect();
         // Band energies.
         let mut band_amp: BandEnergies = [[0.0; NB_EBANDS]; 2];
         let mut log_e: BandEnergies = [[0.0; NB_EBANDS]; 2];
         for ch in 0..c {
             for i in 0..end {
-                let e: f32 = coefs[ch][mm * EBANDS[i]..mm * EBANDS[i + 1]].iter().map(|v| v * v).sum::<f32>();
+                let e: f32 = coefs[ch][mm * EBANDS[i]..mm * EBANDS[i + 1]]
+                    .iter()
+                    .map(|v| v * v)
+                    .sum::<f32>();
                 let a = (e + 1e-27).sqrt();
                 band_amp[ch][i] = a;
                 log_e[ch][i] = a.log2() - E_MEANS[i];
@@ -163,14 +175,27 @@ impl CeltEncoder {
             false
         };
         let mut err: BandEnergies = [[0.0; NB_EBANDS]; 2];
-        energy::code_coarse(enc, total_bits, &mut self.old_band_e, &log_e, &mut err, start, end, intra, c, lm);
+        energy::code_coarse(
+            enc,
+            total_bits,
+            &mut self.old_band_e,
+            &log_e,
+            &mut err,
+            start,
+            end,
+            intra,
+            c,
+            lm,
+        );
         // TF resolution: transients keep their short-block resolution,
         // steady frames their long-block one.
         let mut tf_choice = [0i32; NB_EBANDS];
         if transient {
             tf_choice[start..end].fill(1);
         }
-        let tf_res = bands::code_tf(enc, start, end, transient, lm, total_bits, &tf_choice, false);
+        let tf_res = bands::code_tf(
+            enc, start, end, transient, lm, total_bits, &tf_choice, false,
+        );
         tell = enc.tell();
         // Spreading.
         let mut xn: Vec<Vec<f32>> = coefs.clone();
@@ -214,7 +239,8 @@ impl CeltEncoder {
                 0
             };
         }
-        let (offsets, boosted_total) = rate::code_boosts(enc, start, end, c, lm, &cap, &want_boost, enc.storage());
+        let (offsets, boosted_total) =
+            rate::code_boosts(enc, start, end, c, lm, &cap, &want_boost, enc.storage());
         // Allocation trim (§5.3.4.2).
         let trim = if enc.tell_frac() + (6 << BITRES) <= boosted_total {
             let t = alloc_trim(&log_e, &xn, start, end, c, mm);
@@ -224,7 +250,11 @@ impl CeltEncoder {
             5
         };
         let mut bits = (total_bits << BITRES) - enc.tell_frac() - 1;
-        let anti_collapse_rsv = if transient && lm >= 2 && bits >= (lm as i32 + 2) << BITRES { 1 << BITRES } else { 0 };
+        let anti_collapse_rsv = if transient && lm >= 2 && bits >= (lm as i32 + 2) << BITRES {
+            1 << BITRES
+        } else {
+            0
+        };
         bits -= anti_collapse_rsv;
         // Stereo decisions (§5.3.5).
         let (intensity, dual) = if c == 2 {
@@ -244,11 +274,28 @@ impl CeltEncoder {
         } else {
             (0, false)
         };
-        let choices = EncoderChoices { intensity, dual_stereo: dual, prev_coded: self.prev_coded };
-        let alloc = rate::compute_allocation(enc, start, end, &offsets, &cap, trim, bits, c, lm, choices);
-        energy::code_fine(enc, &mut self.old_band_e, &mut err, &alloc.fine_quant, start, end, c);
+        let choices = EncoderChoices {
+            intensity,
+            dual_stereo: dual,
+            prev_coded: self.prev_coded,
+        };
+        let alloc =
+            rate::compute_allocation(enc, start, end, &offsets, &cap, trim, bits, c, lm, choices);
+        energy::code_fine(
+            enc,
+            &mut self.old_band_e,
+            &mut err,
+            &alloc.fine_quant,
+            start,
+            end,
+            c,
+        );
         let mut xs = std::mem::take(&mut xn[0]);
-        let mut ys = if c == 2 { std::mem::take(&mut xn[1]) } else { Vec::new() };
+        let mut ys = if c == 2 {
+            std::mem::take(&mut xn[1])
+        } else {
+            Vec::new()
+        };
         let params = FrameBands {
             start,
             end,
@@ -265,13 +312,34 @@ impl CeltEncoder {
             disable_inv: false,
         };
         let mut seed = 0;
-        bands::quant_all_bands(enc, &params, &mut xs, if c == 2 { Some(ys.as_mut_slice()) } else { None }, &band_amp, &mut seed);
+        bands::quant_all_bands(
+            enc,
+            &params,
+            &mut xs,
+            if c == 2 {
+                Some(ys.as_mut_slice())
+            } else {
+                None
+            },
+            &band_amp,
+            &mut seed,
+        );
         if anti_collapse_rsv > 0 {
             // Let the decoder fill short blocks that got no pulses.
             enc.bits(1, 1);
         }
         let left = total_bits - enc.tell();
-        energy::code_final(enc, &mut self.old_band_e, &mut err, &alloc.fine_quant, &alloc.fine_priority, left, start, end, c);
+        energy::code_final(
+            enc,
+            &mut self.old_band_e,
+            &mut err,
+            &alloc.fine_quant,
+            &alloc.fine_priority,
+            left,
+            start,
+            end,
+            c,
+        );
         self.prev_coded = alloc.coded_bands;
         self.finish_frame(c, start, end, transient);
         false
@@ -383,13 +451,24 @@ fn spreading_decision(x: &[Vec<f32>], start: usize, end: usize, mm: usize, trans
 
 /// §5.3.4.2: the allocation trim from the spectral tilt and, for stereo,
 /// the inter-channel correlation at low frequencies.
-fn alloc_trim(log_e: &BandEnergies, x: &[Vec<f32>], start: usize, end: usize, c: usize, mm: usize) -> i32 {
+fn alloc_trim(
+    log_e: &BandEnergies,
+    x: &[Vec<f32>],
+    start: usize,
+    end: usize,
+    c: usize,
+    mm: usize,
+) -> i32 {
     let mut trim = 5.0f32;
     if c == 2 {
         let mut corr = 0.0f32;
         for i in 0..8.min(end) {
             let (lo, hi) = (mm * EBANDS[i], mm * EBANDS[i + 1]);
-            let d: f32 = x[0][lo..hi].iter().zip(&x[1][lo..hi]).map(|(a, b)| a * b).sum();
+            let d: f32 = x[0][lo..hi]
+                .iter()
+                .zip(&x[1][lo..hi])
+                .map(|(a, b)| a * b)
+                .sum();
             corr += d;
         }
         let corr = (corr / 8.0).abs().min(1.0);
@@ -426,7 +505,8 @@ fn use_dual_stereo(x: &[Vec<f32>], lm: usize, mm: usize) -> bool {
         for j in mm * EBANDS[i]..mm * EBANDS[i + 1] {
             let (l, r) = (x[0][j], x[1][j]);
             l1_lr += l.abs() + r.abs();
-            l1_ms += (l + r).abs() * std::f32::consts::FRAC_1_SQRT_2 + (l - r).abs() * std::f32::consts::FRAC_1_SQRT_2;
+            l1_ms += (l + r).abs() * std::f32::consts::FRAC_1_SQRT_2
+                + (l - r).abs() * std::f32::consts::FRAC_1_SQRT_2;
             bins += 1;
         }
     }

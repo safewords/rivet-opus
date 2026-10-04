@@ -68,7 +68,11 @@ pub(crate) fn log2_frac(val: u32, frac: u32) -> i32 {
 
 /// The pulse count of pseudo-pulse index `q` (CELT_SPEC §7.2).
 pub(crate) fn get_pulses(q: usize) -> usize {
-    if q < 8 { q } else { (8 + (q & 7)) << ((q >> 3) - 1) }
+    if q < 8 {
+        q
+    } else {
+        (8 + (q & 7)) << ((q >> 3) - 1)
+    }
 }
 
 /// Band width at LM = 0.
@@ -102,7 +106,10 @@ impl Mode {
         let mut bit_deinterleave = [0u32; 16];
         for x in 0..16u32 {
             bit_interleave[x as usize] = u32::from(x & 3 != 0) | (u32::from(x & 12 != 0) << 1);
-            bit_deinterleave[x as usize] = (0..4).filter(|k| x >> k & 1 != 0).map(|k| 3 << (2 * k)).sum();
+            bit_deinterleave[x as usize] = (0..4)
+                .filter(|k| x >> k & 1 != 0)
+                .map(|k| 3 << (2 * k))
+                .sum();
         }
         let mut exp2_table8 = [0i32; 8];
         for (k, v) in exp2_table8.iter_mut().enumerate() {
@@ -160,7 +167,10 @@ fn build_cache() -> ([[i32; NB_EBANDS]; 5], Vec<u8>) {
             let o = bits.len() as i32;
             seen.push((n, o));
             *slot = o;
-            let kmax = (0..=MAX_PSEUDO).rev().find(|&q| cwrs::v(n, get_pulses(q)) < 1 << 32).unwrap_or(0);
+            let kmax = (0..=MAX_PSEUDO)
+                .rev()
+                .find(|&q| cwrs::v(n, get_pulses(q)) < 1 << 32)
+                .unwrap_or(0);
             bits.push(kmax as u8);
             for q in 1..=kmax {
                 let v = cwrs::v(n, get_pulses(q)) as u32;
@@ -173,7 +183,11 @@ fn build_cache() -> ([[i32; NB_EBANDS]; 5], Vec<u8>) {
 
 /// The caps of CELT_SPEC §7.3: the most eighth bits a band can use at each
 /// LM and channel count, in the byte form the allocation reads.
-fn build_caps(index: &[[i32; NB_EBANDS]; 5], bits: &[u8], log_n: &[i32; NB_EBANDS]) -> [[i32; NB_EBANDS]; 8] {
+fn build_caps(
+    index: &[[i32; NB_EBANDS]; 5],
+    bits: &[u8],
+    log_n: &[i32; NB_EBANDS],
+) -> [[i32; NB_EBANDS]; 8] {
     let mut caps = [[0i32; NB_EBANDS]; 8];
     for lm in 0..4i32 {
         for c in 1..=2i32 {
@@ -235,65 +249,56 @@ mod tests {
     mod extracted {
         /// RFC 6716 Appendix A celt/rate.c, `LOG2_FRAC_TABLE`, extracted by tools/appendix_a_tables.py.
         pub const LOG2_FRAC_TABLE: [u8; 24] = [
-            0, 8, 13, 16, 19, 21, 23, 24, 26, 27, 28, 29,
-            30, 31, 32, 32, 33, 34, 34, 35, 36, 36, 37, 37,
+            0, 8, 13, 16, 19, 21, 23, 24, 26, 27, 28, 29, 30, 31, 32, 32, 33, 34, 34, 35, 36, 36,
+            37, 37,
         ];
 
         /// RFC 6716 Appendix A celt/bands.c, `ordery_table`, extracted by tools/appendix_a_tables.py.
         pub const ORDERY_TABLE: [i32; 30] = [
-            1, 0, 3, 0, 2, 1, 7, 0, 4, 3, 6, 1,
-            5, 2, 15, 0, 8, 7, 12, 3, 11, 4, 14, 1,
-            9, 6, 13, 2, 10, 5,
+            1, 0, 3, 0, 2, 1, 7, 0, 4, 3, 6, 1, 5, 2, 15, 0, 8, 7, 12, 3, 11, 4, 14, 1, 9, 6, 13,
+            2, 10, 5,
         ];
 
         /// RFC 6716 Appendix A celt/bands.c, `bit_interleave_table`, extracted by tools/appendix_a_tables.py.
-        pub const BIT_INTERLEAVE_TABLE: [u8; 16] = [
-            0, 1, 1, 1, 2, 3, 3, 3, 2, 3, 3, 3,
-            2, 3, 3, 3,
-        ];
+        pub const BIT_INTERLEAVE_TABLE: [u8; 16] = [0, 1, 1, 1, 2, 3, 3, 3, 2, 3, 3, 3, 2, 3, 3, 3];
 
         /// RFC 6716 Appendix A celt/bands.c, `bit_deinterleave_table`, extracted by tools/appendix_a_tables.py.
         pub const BIT_DEINTERLEAVE_TABLE: [u8; 16] = [
-            0, 3, 12, 15, 48, 51, 60, 63, 192, 195, 204, 207,
-            240, 243, 252, 255,
+            0, 3, 12, 15, 48, 51, 60, 63, 192, 195, 204, 207, 240, 243, 252, 255,
         ];
 
         /// RFC 6716 Appendix A celt/bands.c, `exp2_table8`, extracted by tools/appendix_a_tables.py.
-        pub const EXP2_TABLE8: [i16; 8] = [
-            16384, 17866, 19483, 21247, 23170, 25267, 27554, 30048,
-        ];
+        pub const EXP2_TABLE8: [i16; 8] = [16384, 17866, 19483, 21247, 23170, 25267, 27554, 30048];
 
         /// RFC 6716 Appendix A celt/static_modes_float.h, `logN400`, extracted by tools/appendix_a_tables.py.
         pub const LOGN400: [i16; 21] = [
-            0, 0, 0, 0, 0, 0, 0, 0, 8, 8, 8, 8,
-            16, 16, 16, 21, 21, 24, 29, 34, 36,
+            0, 0, 0, 0, 0, 0, 0, 0, 8, 8, 8, 8, 16, 16, 16, 21, 21, 24, 29, 34, 36,
         ];
 
         /// RFC 6716 Appendix A celt/static_modes_float.h, `cache_index50`, extracted by tools/appendix_a_tables.py.
         pub const CACHE_INDEX50: [[i16; 21]; 5] = [
             [
-                -1, -1, -1, -1, -1, -1, -1, -1, 0, 0, 0, 0,
-                41, 41, 41, 82, 82, 123, 164, 200, 222,
+                -1, -1, -1, -1, -1, -1, -1, -1, 0, 0, 0, 0, 41, 41, 41, 82, 82, 123, 164, 200, 222,
             ],
             [
-                0, 0, 0, 0, 0, 0, 0, 0, 41, 41, 41, 41,
-                123, 123, 123, 164, 164, 240, 266, 283, 295,
+                0, 0, 0, 0, 0, 0, 0, 0, 41, 41, 41, 41, 123, 123, 123, 164, 164, 240, 266, 283, 295,
             ],
             [
-                41, 41, 41, 41, 41, 41, 41, 41, 123, 123, 123, 123,
-                240, 240, 240, 266, 266, 305, 318, 328, 336,
+                41, 41, 41, 41, 41, 41, 41, 41, 123, 123, 123, 123, 240, 240, 240, 266, 266, 305,
+                318, 328, 336,
             ],
             [
-                123, 123, 123, 123, 123, 123, 123, 123, 240, 240, 240, 240,
-                305, 305, 305, 318, 318, 343, 351, 358, 364,
+                123, 123, 123, 123, 123, 123, 123, 123, 240, 240, 240, 240, 305, 305, 305, 318,
+                318, 343, 351, 358, 364,
             ],
             [
-                240, 240, 240, 240, 240, 240, 240, 240, 305, 305, 305, 305,
-                343, 343, 343, 351, 351, 370, 376, 382, 387,
+                240, 240, 240, 240, 240, 240, 240, 240, 305, 305, 305, 305, 343, 343, 343, 351,
+                351, 370, 376, 382, 387,
             ],
         ];
 
         /// RFC 6716 Appendix A celt/static_modes_float.h, `cache_bits50`, extracted by tools/appendix_a_tables.py.
+        #[rustfmt::skip]
         pub const CACHE_BITS50: [u8; 392] = [
             40, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
             7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
@@ -333,55 +338,50 @@ mod tests {
         /// RFC 6716 Appendix A celt/static_modes_float.h, `cache_caps50`, extracted by tools/appendix_a_tables.py.
         pub const CACHE_CAPS50: [[u8; 21]; 8] = [
             [
-                224, 224, 224, 224, 224, 224, 224, 224, 160, 160, 160, 160,
-                185, 185, 185, 178, 178, 168, 134, 61, 37,
+                224, 224, 224, 224, 224, 224, 224, 224, 160, 160, 160, 160, 185, 185, 185, 178,
+                178, 168, 134, 61, 37,
             ],
             [
-                224, 224, 224, 224, 224, 224, 224, 224, 240, 240, 240, 240,
-                207, 207, 207, 198, 198, 183, 144, 66, 40,
+                224, 224, 224, 224, 224, 224, 224, 224, 240, 240, 240, 240, 207, 207, 207, 198,
+                198, 183, 144, 66, 40,
             ],
             [
-                160, 160, 160, 160, 160, 160, 160, 160, 185, 185, 185, 185,
-                193, 193, 193, 183, 183, 172, 138, 64, 38,
+                160, 160, 160, 160, 160, 160, 160, 160, 185, 185, 185, 185, 193, 193, 193, 183,
+                183, 172, 138, 64, 38,
             ],
             [
-                240, 240, 240, 240, 240, 240, 240, 240, 207, 207, 207, 207,
-                204, 204, 204, 193, 193, 180, 143, 66, 40,
+                240, 240, 240, 240, 240, 240, 240, 240, 207, 207, 207, 207, 204, 204, 204, 193,
+                193, 180, 143, 66, 40,
             ],
             [
-                185, 185, 185, 185, 185, 185, 185, 185, 193, 193, 193, 193,
-                193, 193, 193, 183, 183, 172, 138, 65, 39,
+                185, 185, 185, 185, 185, 185, 185, 185, 193, 193, 193, 193, 193, 193, 193, 183,
+                183, 172, 138, 65, 39,
             ],
             [
-                207, 207, 207, 207, 207, 207, 207, 207, 204, 204, 204, 204,
-                201, 201, 201, 188, 188, 176, 141, 66, 40,
+                207, 207, 207, 207, 207, 207, 207, 207, 204, 204, 204, 204, 201, 201, 201, 188,
+                188, 176, 141, 66, 40,
             ],
             [
-                193, 193, 193, 193, 193, 193, 193, 193, 193, 193, 193, 193,
-                194, 194, 194, 184, 184, 173, 139, 65, 39,
+                193, 193, 193, 193, 193, 193, 193, 193, 193, 193, 193, 193, 194, 194, 194, 184,
+                184, 173, 139, 65, 39,
             ],
             [
-                204, 204, 204, 204, 204, 204, 204, 204, 201, 201, 201, 201,
-                198, 198, 198, 187, 187, 175, 140, 66, 40,
+                204, 204, 204, 204, 204, 204, 204, 204, 201, 201, 201, 201, 198, 198, 198, 187,
+                187, 175, 140, 66, 40,
             ],
         ];
 
         /// RFC 6716 Appendix A celt/quant_bands.c, `eMeans` (FIXED_POINT branch), extracted by tools/appendix_a_tables.py.
         pub const E_MEANS_Q4: [i8; 25] = [
-            103, 100, 92, 85, 81, 77, 72, 70, 78, 75, 73, 71,
-            78, 74, 69, 72, 70, 74, 76, 71, 60, 60, 60, 60,
-            60,
+            103, 100, 92, 85, 81, 77, 72, 70, 78, 75, 73, 71, 78, 74, 69, 72, 70, 74, 76, 71, 60,
+            60, 60, 60, 60,
         ];
 
         /// RFC 6716 Appendix A celt/quant_bands.c, `pred_coef` (FIXED_POINT branch), extracted by tools/appendix_a_tables.py.
-        pub const PRED_COEF_Q15: [i16; 4] = [
-            29440, 26112, 21248, 16384,
-        ];
+        pub const PRED_COEF_Q15: [i16; 4] = [29440, 26112, 21248, 16384];
 
         /// RFC 6716 Appendix A celt/quant_bands.c, `beta_coef` (FIXED_POINT branch), extracted by tools/appendix_a_tables.py.
-        pub const BETA_COEF_Q15: [i16; 4] = [
-            30147, 22282, 12124, 6554,
-        ];
+        pub const BETA_COEF_Q15: [i16; 4] = [30147, 22282, 12124, 6554];
 
         /// RFC 6716 Appendix A celt/quant_bands.c, `beta_intra` (FIXED_POINT branch), extracted by tools/appendix_a_tables.py.
         pub const BETA_INTRA_Q15: i16 = 4915;
@@ -391,9 +391,16 @@ mod tests {
     fn log2_frac_tables_match_appendix_a() {
         let m = mode();
         for i in 0..24 {
-            assert_eq!(m.log2_frac_table[i], i32::from(extracted::LOG2_FRAC_TABLE[i]), "LOG2_FRAC_TABLE[{i}]");
+            assert_eq!(
+                m.log2_frac_table[i],
+                i32::from(extracted::LOG2_FRAC_TABLE[i]),
+                "LOG2_FRAC_TABLE[{i}]"
+            );
             // Also the ceiling of 8·log2 (CELT_SPEC §6.2).
-            assert_eq!(m.log2_frac_table[i], (8.0 * ((i + 1) as f64).log2()).ceil() as i32);
+            assert_eq!(
+                m.log2_frac_table[i],
+                (8.0 * ((i + 1) as f64).log2()).ceil() as i32
+            );
         }
         for j in 0..NB_EBANDS {
             assert_eq!(m.log_n[j], i32::from(extracted::LOGN400[j]), "logN[{j}]");
@@ -405,7 +412,11 @@ mod tests {
         let m = mode();
         for r in 0..5 {
             for j in 0..NB_EBANDS {
-                assert_eq!(m.cache_index[r][j], i32::from(extracted::CACHE_INDEX50[r][j]), "cache_index[{r}][{j}]");
+                assert_eq!(
+                    m.cache_index[r][j],
+                    i32::from(extracted::CACHE_INDEX50[r][j]),
+                    "cache_index[{r}][{j}]"
+                );
             }
         }
         assert_eq!(m.cache_bits, extracted::CACHE_BITS50.to_vec());
@@ -416,7 +427,11 @@ mod tests {
         let m = mode();
         for r in 0..8 {
             for j in 0..NB_EBANDS {
-                assert_eq!(m.cache_caps[r][j], i32::from(extracted::CACHE_CAPS50[r][j]), "caps[{r}][{j}]");
+                assert_eq!(
+                    m.cache_caps[r][j],
+                    i32::from(extracted::CACHE_CAPS50[r][j]),
+                    "caps[{r}][{j}]"
+                );
             }
         }
     }
@@ -425,11 +440,21 @@ mod tests {
     fn small_tables_match_appendix_a() {
         let m = mode();
         for i in 0..30 {
-            assert_eq!(m.ordery[i] as i32, extracted::ORDERY_TABLE[i], "ordery[{i}]");
+            assert_eq!(
+                m.ordery[i] as i32,
+                extracted::ORDERY_TABLE[i],
+                "ordery[{i}]"
+            );
         }
         for x in 0..16 {
-            assert_eq!(m.bit_interleave[x], u32::from(extracted::BIT_INTERLEAVE_TABLE[x]));
-            assert_eq!(m.bit_deinterleave[x], u32::from(extracted::BIT_DEINTERLEAVE_TABLE[x]));
+            assert_eq!(
+                m.bit_interleave[x],
+                u32::from(extracted::BIT_INTERLEAVE_TABLE[x])
+            );
+            assert_eq!(
+                m.bit_deinterleave[x],
+                u32::from(extracted::BIT_DEINTERLEAVE_TABLE[x])
+            );
         }
         for k in 0..8 {
             assert_eq!(m.exp2_table8[k], i32::from(extracted::EXP2_TABLE8[k]));
@@ -444,8 +469,14 @@ mod tests {
             assert_eq!(E_MEANS[i], f32::from(extracted::E_MEANS_Q4[i]) / 16.0);
         }
         for k in 0..4 {
-            assert_eq!(PRED_COEF[k], f32::from(extracted::PRED_COEF_Q15[k]) / 32768.0);
-            assert_eq!(BETA_COEF[k], f32::from(extracted::BETA_COEF_Q15[k]) / 32768.0);
+            assert_eq!(
+                PRED_COEF[k],
+                f32::from(extracted::PRED_COEF_Q15[k]) / 32768.0
+            );
+            assert_eq!(
+                BETA_COEF[k],
+                f32::from(extracted::BETA_COEF_Q15[k]) / 32768.0
+            );
         }
         assert_eq!(BETA_INTRA, f32::from(extracted::BETA_INTRA_Q15) / 32768.0);
     }
@@ -472,7 +503,10 @@ mod tests {
         for v in (1u32..5000).chain([65535, 65537, 1 << 20 | 1, u32::MAX]) {
             let exact = 8.0 * f64::from(v).log2();
             let l = f64::from(log2_frac(v, 3));
-            assert!(l >= exact - 1e-9 && l <= exact + 1.0 + 1e-9, "{v}: {l} vs {exact}");
+            assert!(
+                l >= exact - 1e-9 && l <= exact + 1.0 + 1e-9,
+                "{v}: {l} vs {exact}"
+            );
         }
     }
 }

@@ -14,7 +14,11 @@ pub fn order(wb: bool) -> usize {
 
 /// The stage-1 codebook vector `i1` (Q8).
 pub fn cb1(wb: bool, i1: usize) -> &'static [i32] {
-    if wb { &NLSF_CB1_WB_Q8[i1] } else { &NLSF_CB1_NB_Q8[i1] }
+    if wb {
+        &NLSF_CB1_WB_Q8[i1]
+    } else {
+        &NLSF_CB1_NB_Q8[i1]
+    }
 }
 
 /// The stage-2 inverse CDF for coefficient `k` given `i1`.
@@ -46,7 +50,11 @@ pub fn residual_q10(wb: bool, i1: usize, i2: &[i32]) -> [i32; 16] {
     let q = qstep(wb);
     let mut res = [0i32; 16];
     for k in (0..d).rev() {
-        let pred = if k + 1 < d { (res[k + 1] * pred_q8(wb, i1, k)) >> 8 } else { 0 };
+        let pred = if k + 1 < d {
+            (res[k + 1] * pred_q8(wb, i1, k)) >> 8
+        } else {
+            0
+        };
         let i = i2[k];
         res[k] = pred + ((((i << 10) - i.signum() * 102) * q) >> 16);
     }
@@ -85,7 +93,11 @@ pub fn reconstruct(wb: bool, i1: usize, i2: &[i32]) -> [i32; 16] {
 /// §4.2.7.5.4 (with RFC 8251 §7): enforces the minimum spacing.
 pub fn stabilize(nlsf: &mut [i32], wb: bool) {
     let d = order(wb);
-    let dmin: &[i32] = if wb { &NLSF_MIN_SPACING_WB } else { &NLSF_MIN_SPACING_NB };
+    let dmin: &[i32] = if wb {
+        &NLSF_MIN_SPACING_WB
+    } else {
+        &NLSF_MIN_SPACING_NB
+    };
     for _ in 0..20 {
         // Find the worst violation (lowest index on ties).
         let mut min_diff = i32::MAX;
@@ -219,7 +231,8 @@ pub fn nlsf_to_lpc(nlsf: &[i32], wb: bool) -> Vec<i32> {
         for j in 0..=k + 1 {
             let ji = j as isize;
             np[j] = get(&p, ji) + get(&p, ji - 2) - ((c[2 * k] * get(&p, ji - 1) + 32768) >> 16);
-            nq[j] = get(&q, ji) + get(&q, ji - 2) - ((c[2 * k + 1] * get(&q, ji - 1) + 32768) >> 16);
+            nq[j] =
+                get(&q, ji) + get(&q, ji - 2) - ((c[2 * k + 1] * get(&q, ji - 1) + 32768) >> 16);
         }
         p = np;
         q = nq;
@@ -303,12 +316,31 @@ mod tests {
     #[test]
     fn icdfs_are_well_formed() {
         let mut all: Vec<&[u8]> = vec![
-            &STEREO_STAGE1_ICDF, &STEREO_STAGE2_ICDF, &STEREO_STAGE3_ICDF, &MID_ONLY_ICDF,
-            &FRAME_TYPE_INACTIVE_ICDF, &FRAME_TYPE_ACTIVE_ICDF, &GAIN_LSB_ICDF, &GAIN_DELTA_ICDF,
-            &NLSF_EXT_ICDF, &NLSF_INTERP_ICDF, &PITCH_HIGH_ICDF, &PITCH_LOW_NB_ICDF,
-            &PITCH_LOW_MB_ICDF, &PITCH_LOW_WB_ICDF, &PITCH_DELTA_ICDF, &CONTOUR_NB10_ICDF,
-            &CONTOUR_NB20_ICDF, &CONTOUR_WB10_ICDF, &CONTOUR_WB20_ICDF, &PERIODICITY_ICDF,
-            &LTP_SCALE_ICDF, &SEED_ICDF, &LSB_ICDF, &LBRR_FLAGS_2_ICDF, &LBRR_FLAGS_3_ICDF,
+            &STEREO_STAGE1_ICDF,
+            &STEREO_STAGE2_ICDF,
+            &STEREO_STAGE3_ICDF,
+            &MID_ONLY_ICDF,
+            &FRAME_TYPE_INACTIVE_ICDF,
+            &FRAME_TYPE_ACTIVE_ICDF,
+            &GAIN_LSB_ICDF,
+            &GAIN_DELTA_ICDF,
+            &NLSF_EXT_ICDF,
+            &NLSF_INTERP_ICDF,
+            &PITCH_HIGH_ICDF,
+            &PITCH_LOW_NB_ICDF,
+            &PITCH_LOW_MB_ICDF,
+            &PITCH_LOW_WB_ICDF,
+            &PITCH_DELTA_ICDF,
+            &CONTOUR_NB10_ICDF,
+            &CONTOUR_NB20_ICDF,
+            &CONTOUR_WB10_ICDF,
+            &CONTOUR_WB20_ICDF,
+            &PERIODICITY_ICDF,
+            &LTP_SCALE_ICDF,
+            &SEED_ICDF,
+            &LSB_ICDF,
+            &LBRR_FLAGS_2_ICDF,
+            &LBRR_FLAGS_3_ICDF,
         ];
         all.extend(GAIN_MSB_ICDF.iter().map(|t| &t[..]));
         all.extend(NLSF_STAGE1_ICDF.iter().map(|t| &t[..]));
@@ -338,7 +370,9 @@ mod tests {
     fn lsf_to_lpc_is_stable() {
         for wb in [false, true] {
             let d = order(wb);
-            let flat: Vec<i32> = (0..d).map(|k| ((k as i32 + 1) * 32768) / (d as i32 + 1)).collect();
+            let flat: Vec<i32> = (0..d)
+                .map(|k| ((k as i32 + 1) * 32768) / (d as i32 + 1))
+                .collect();
             let a = nlsf_to_lpc(&flat, wb);
             assert!(a.iter().all(|v| v.abs() < 200), "{a:?}");
             let mut seed = 99u32;
@@ -350,7 +384,11 @@ mod tests {
                     })
                     .collect();
                 stabilize(&mut n, wb);
-                let dmin: &[i32] = if wb { &NLSF_MIN_SPACING_WB } else { &NLSF_MIN_SPACING_NB };
+                let dmin: &[i32] = if wb {
+                    &NLSF_MIN_SPACING_WB
+                } else {
+                    &NLSF_MIN_SPACING_NB
+                };
                 assert!(n[0] >= dmin[0]);
                 for k in 1..d {
                     assert!(n[k] - n[k - 1] >= dmin[k], "{n:?}");

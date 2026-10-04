@@ -30,7 +30,11 @@ use crate::range::RangeEncoder;
 
 /// Cost in bits of symbol `s` of an inverse-CDF table (ft 256).
 fn sym_bits(icdf: &[u8], s: usize) -> f32 {
-    let hi = if s == 0 { 256.0 } else { f32::from(icdf[s - 1]) };
+    let hi = if s == 0 {
+        256.0
+    } else {
+        f32::from(icdf[s - 1])
+    };
     let p = (hi - f32::from(icdf[s])) / 256.0;
     if p <= 0.0 { 30.0 } else { -p.log2() }
 }
@@ -62,7 +66,11 @@ pub fn encode_indices(
     }
     for k in 0..nb_subfr {
         if k == 0 && cond != CondCoding::Conditional {
-            enc.icdf((ix.gains[0] >> 3) as usize, &GAIN_MSB_ICDF[ix.signal_type as usize], 8);
+            enc.icdf(
+                (ix.gains[0] >> 3) as usize,
+                &GAIN_MSB_ICDF[ix.signal_type as usize],
+                8,
+            );
             enc.icdf((ix.gains[0] & 7) as usize, &GAIN_LSB_ICDF, 8);
         } else {
             enc.icdf(ix.gains[k] as usize, &GAIN_DELTA_ICDF, 8);
@@ -73,7 +81,11 @@ pub fn encode_indices(
     enc.icdf(ix.nlsf_i1, &NLSF_STAGE1_ICDF[s1], 8);
     for k in 0..nlsf::order(wb) {
         let v = ix.nlsf_i2[k];
-        enc.icdf((v.clamp(-4, 4) + 4) as usize, nlsf::stage2_icdf(wb, ix.nlsf_i1, k), 8);
+        enc.icdf(
+            (v.clamp(-4, 4) + 4) as usize,
+            nlsf::stage2_icdf(wb, ix.nlsf_i1, k),
+            8,
+        );
         if v <= -4 {
             enc.icdf((-4 - v) as usize, &NLSF_EXT_ICDF, 8);
         } else if v >= 4 {
@@ -145,14 +157,22 @@ fn block_shape(q: &[i32]) -> (usize, i32) {
 }
 
 fn level_after(rate_level: usize, t: usize) -> usize {
-    if t == 0 { rate_level } else if t == 10 { 10 } else { 9 }
+    if t == 0 {
+        rate_level
+    } else if t == 10 {
+        10
+    } else {
+        9
+    }
 }
 
 /// Encodes the excitation pulses (the inverse of `decode_pulses`); `q` has
 /// a whole number of 16-sample blocks.
 pub fn encode_pulses(enc: &mut RangeEncoder, q: &[i32], signal_type: SignalType, qoff: usize) {
     let blocks = q.len() / 16;
-    let shapes: Vec<(usize, i32)> = (0..blocks).map(|b| block_shape(&q[b * 16..b * 16 + 16])).collect();
+    let shapes: Vec<(usize, i32)> = (0..blocks)
+        .map(|b| block_shape(&q[b * 16..b * 16 + 16]))
+        .collect();
     let rl_icdf = &RATE_LEVEL_ICDF[usize::from(signal_type == SignalType::Voiced)];
     let mut best = (f32::MAX, 0usize);
     for level in 0..9 {
@@ -177,7 +197,10 @@ pub fn encode_pulses(enc: &mut RangeEncoder, q: &[i32], signal_type: SignalType,
     }
     for (b, &(s, count)) in shapes.iter().enumerate() {
         if count > 0 {
-            let m: Vec<i32> = q[b * 16..b * 16 + 16].iter().map(|v| v.abs() >> s).collect();
+            let m: Vec<i32> = q[b * 16..b * 16 + 16]
+                .iter()
+                .map(|v| v.abs() >> s)
+                .collect();
             shell_encode(enc, &m);
         }
     }
@@ -306,7 +329,11 @@ impl NlsfGrid {
         // `Iterator::sum` of floats starts from -0.0.
         out.fill(-0.0);
         for (k, &ck) in c.iter().enumerate() {
-            let (row, neg) = if k < terms { (k, false) } else { (d + 1 - k, odd) };
+            let (row, neg) = if k < terms {
+                (k, false)
+            } else {
+                (d + 1 - k, odd)
+            };
             let row = &rows[row * NLSF_GRID..(row + 1) * NLSF_GRID];
             if neg {
                 for (o, &t) in out.iter_mut().zip(row) {
@@ -333,8 +360,18 @@ fn lpc_to_nlsf(a: &[f64]) -> Option<Vec<i32>> {
     let p: Vec<f64> = (0..=d + 1).map(|k| c[k] + c[d + 1 - k]).collect();
     let q: Vec<f64> = (0..=d + 1).map(|k| c[k] - c[d + 1 - k]).collect();
     let half = (d + 1) as f64 / 2.0;
-    let fp = |w: f64| -> f64 { p.iter().enumerate().map(|(k, v)| v * (w * (half - k as f64)).cos()).sum() };
-    let fq = |w: f64| -> f64 { q.iter().enumerate().map(|(k, v)| v * (w * (half - k as f64)).sin()).sum() };
+    let fp = |w: f64| -> f64 {
+        p.iter()
+            .enumerate()
+            .map(|(k, v)| v * (w * (half - k as f64)).cos())
+            .sum()
+    };
+    let fq = |w: f64| -> f64 {
+        q.iter()
+            .enumerate()
+            .map(|(k, v)| v * (w * (half - k as f64)).sin())
+            .sum()
+    };
     let grid = NlsfGrid::get(d);
     // P and Q on the whole grid, from the table.
     let mut vp = [0.0f64; NLSF_GRID];
@@ -342,7 +379,10 @@ fn lpc_to_nlsf(a: &[f64]) -> Option<Vec<i32>> {
     NlsfGrid::sweep(&grid.cos, &p, false, &mut vp);
     NlsfGrid::sweep(&grid.sin, &q, true, &mut vq);
     let mut roots: Vec<(f64, bool)> = Vec::with_capacity(d);
-    for (is_p, f, g) in [(true, &fp as &dyn Fn(f64) -> f64, &vp), (false, &fq as &dyn Fn(f64) -> f64, &vq)] {
+    for (is_p, f, g) in [
+        (true, &fp as &dyn Fn(f64) -> f64, &vp),
+        (false, &fq as &dyn Fn(f64) -> f64, &vq),
+    ] {
         let mut prev_w = 1e-6;
         let mut prev_v = f(prev_w);
         for j in 1..NLSF_GRID {
@@ -375,7 +415,16 @@ fn lpc_to_nlsf(a: &[f64]) -> Option<Vec<i32>> {
             return None;
         }
     }
-    Some(roots.iter().map(|r| ((r.0 / std::f64::consts::PI) * 32768.0).round().clamp(1.0, 32767.0) as i32).collect())
+    Some(
+        roots
+            .iter()
+            .map(|r| {
+                ((r.0 / std::f64::consts::PI) * 32768.0)
+                    .round()
+                    .clamp(1.0, 32767.0) as i32
+            })
+            .collect(),
+    )
 }
 
 /// The stage-2 dequantized step for index `i`.
@@ -393,13 +442,16 @@ fn quantize_nlsf(target: &[i32], wb: bool, voiced: bool) -> (usize, [i32; 16]) {
     for k in 0..d {
         let prev = if k == 0 { 0 } else { target[k - 1] };
         let next = if k + 1 == d { 32768 } else { target[k + 1] };
-        w_in[k] = 1.0 / f64::from((target[k] - prev).max(64)) + 1.0 / f64::from((next - target[k]).max(64));
+        w_in[k] = 1.0 / f64::from((target[k] - prev).max(64))
+            + 1.0 / f64::from((next - target[k]).max(64));
     }
     let s1 = usize::from(wb) * 2 + usize::from(voiced);
     let mut stage1: Vec<(f64, usize)> = (0..32)
         .map(|i1| {
             let cb = nlsf::cb1(wb, i1);
-            let e: f64 = (0..d).map(|k| w_in[k] * (f64::from(target[k] - (cb[k] << 7))).powi(2)).sum();
+            let e: f64 = (0..d)
+                .map(|k| w_in[k] * (f64::from(target[k] - (cb[k] << 7))).powi(2))
+                .sum();
             (e, i1)
         })
         .collect();
@@ -413,7 +465,11 @@ fn quantize_nlsf(target: &[i32], wb: bool, voiced: bool) -> (usize, [i32; 16]) {
         let mut rate = sym_bits(&NLSF_STAGE1_ICDF[s1], i1) as f64;
         for k in (0..d).rev() {
             let want = (f64::from(target[k] - (cb[k] << 7)) * f64::from(wq9[k]) / 16384.0) as i32;
-            let pred = if k + 1 < d { (res_q[k + 1] * nlsf::pred_q8(wb, i1, k)) >> 8 } else { 0 };
+            let pred = if k + 1 < d {
+                (res_q[k + 1] * nlsf::pred_q8(wb, i1, k)) >> 8
+            } else {
+                0
+            };
             let icdf = nlsf::stage2_icdf(wb, i1, k);
             let mut bi = (f64::MAX, 0i32);
             for i in -10..=10 {
@@ -438,7 +494,9 @@ fn quantize_nlsf(target: &[i32], wb: bool, voiced: bool) -> (usize, [i32; 16]) {
         }
         let mut rec = nlsf::reconstruct(wb, i1, &i2);
         nlsf::stabilize(&mut rec[..d], wb);
-        let e: f64 = (0..d).map(|k| w_in[k] * f64::from(target[k] - rec[k]).powi(2)).sum();
+        let e: f64 = (0..d)
+            .map(|k| w_in[k] * f64::from(target[k] - rec[k]).powi(2))
+            .sum();
         let cost = e + 0.02 * rate;
         if cost < best.0 {
             best = (cost, i1, i2);
@@ -514,7 +572,11 @@ fn ncorr(r: &[f32], start: usize, len: usize, lag: usize) -> f64 {
         xx += x * x;
         yy += y * y;
     }
-    if xx <= 1e-12 || yy <= 1e-12 { 0.0 } else { xy / (xx * yy).sqrt() }
+    if xx <= 1e-12 || yy <= 1e-12 {
+        0.0
+    } else {
+        xy / (xx * yy).sqrt()
+    }
 }
 
 /// [`ncorr`] at lags `lag0 .. lag0 + out.len()` into `out`, bit-identical
@@ -527,7 +589,13 @@ fn ncorr_lags(r: &[f32], start: usize, len: usize, lag0: usize, out: &mut [f64])
     for &v in &r[start..start + len] {
         xx += f64::from(v) * f64::from(v);
     }
-    let finish = |xy: f64, yy: f64| if xx <= 1e-12 || yy <= 1e-12 { 0.0 } else { xy / (xx * yy).sqrt() };
+    let finish = |xy: f64, yy: f64| {
+        if xx <= 1e-12 || yy <= 1e-12 {
+            0.0
+        } else {
+            xy / (xx * yy).sqrt()
+        }
+    };
     let (chunks, rest) = out.as_chunks_mut::<B>();
     let mut lag = lag0;
     for o in chunks {
@@ -567,7 +635,13 @@ const HIST: usize = 640;
 
 impl ChannelEncoder {
     fn new(fs_khz: usize) -> Self {
-        Self { state: ChannelState::new(fs_khz), hist: vec![0.0; HIST], noise_floor: 1e-6, seed: 0, prev_voiced: false }
+        Self {
+            state: ChannelState::new(fs_khz),
+            hist: vec![0.0; HIST],
+            noise_floor: 1e-6,
+            seed: 0,
+            prev_voiced: false,
+        }
     }
 
     /// Analyses `frame` (with `ahead` samples of lookahead after it).
@@ -578,9 +652,17 @@ impl ChannelEncoder {
         let sub = n / nb_subfr;
         let wb = fs == 16;
         // Voice activity.
-        let energy = frame.iter().map(|v| f64::from(*v) * f64::from(*v)).sum::<f64>() / n as f64;
+        let energy = frame
+            .iter()
+            .map(|v| f64::from(*v) * f64::from(*v))
+            .sum::<f64>()
+            / n as f64;
         let active = energy > 3.0 * self.noise_floor && energy > 1e-8;
-        self.noise_floor = if energy < self.noise_floor { 0.7 * self.noise_floor + 0.3 * energy } else { self.noise_floor * 1.02 };
+        self.noise_floor = if energy < self.noise_floor {
+            0.7 * self.noise_floor + 0.3 * energy
+        } else {
+            self.noise_floor * 1.02
+        };
         self.noise_floor = self.noise_floor.max(1e-9);
         // LPC on a block: 5 ms of history, the frame, the lookahead.
         let pre = 5 * fs;
@@ -590,7 +672,9 @@ impl ChannelEncoder {
         let a = lpc_analysis(&block, d);
         let nlsf_target = lpc_to_nlsf(&a).unwrap_or_else(|| {
             if self.state.first_frame_after_reset {
-                (0..d).map(|k| ((k as i32 + 1) * 32768) / (d as i32 + 1)).collect()
+                (0..d)
+                    .map(|k| ((k as i32 + 1) * 32768) / (d as i32 + 1))
+                    .collect()
             } else {
                 self.state.prev_nlsf[..d].to_vec()
             }
@@ -725,7 +809,10 @@ impl ChannelEncoder {
         let (i1, i2) = quantize_nlsf(&nlsf_target, wb, voiced);
         let mut rec = nlsf::reconstruct(wb, i1, &i2);
         nlsf::stabilize(&mut rec[..d], wb);
-        let aq: Vec<f64> = nlsf::nlsf_to_lpc(&rec[..d], wb).iter().map(|&v| f64::from(v) / 4096.0).collect();
+        let aq: Vec<f64> = nlsf::nlsf_to_lpc(&rec[..d], wb)
+            .iter()
+            .map(|&v| f64::from(v) / 4096.0)
+            .collect();
         let mut sigma = [0.0f64; 4];
         for k in 0..nb_subfr {
             let s0 = start + k * sub;
@@ -740,7 +827,12 @@ impl ChannelEncoder {
             // The LPC residual level; voiced frames get part of it from the
             // LTP, so their step can be finer for the same rate.
             let scale = if voiced { 0.6 } else { 1.0 };
-            let level = (frame[k * sub..(k + 1) * sub].iter().map(|v| f64::from(*v) * f64::from(*v)).sum::<f64>() / sub as f64).sqrt();
+            let level = (frame[k * sub..(k + 1) * sub]
+                .iter()
+                .map(|v| f64::from(*v) * f64::from(*v))
+                .sum::<f64>()
+                / sub as f64)
+                .sqrt();
             sigma[k] = scale * (e / sub as f64).sqrt().max(0.1 * level).max(1e-6);
         }
         // A subframe much quieter than its neighbours still has to absorb
@@ -757,7 +849,19 @@ impl ChannelEncoder {
         self.hist = h[h.len() - HIST..].to_vec();
         self.prev_voiced = voiced;
         let level = energy.sqrt();
-        Analysis { active, voiced, nlsf_i1: i1, nlsf_i2: i2, lag, contour, periodicity, ltp, sigma, ext, level }
+        Analysis {
+            active,
+            voiced,
+            nlsf_i1: i1,
+            nlsf_i2: i2,
+            lag,
+            contour,
+            periodicity,
+            ltp,
+            sigma,
+            ext,
+            level,
+        }
     }
 
     /// One trial encoding of a frame at gain multiplier `mult`, on clones
@@ -778,7 +882,9 @@ impl ChannelEncoder {
         // too fine for its (closed-loop) residual: coarsen it and retry.
         let mut boost = [1.0f64; 4];
         for _ in 0..4 {
-            let (st, e2, bits, seed, sat) = self.trial_once(an, frame, nb_subfr, mult, &boost, cond, active, enc, ltp_scale);
+            let (st, e2, bits, seed, sat) = self.trial_once(
+                an, frame, nb_subfr, mult, &boost, cond, active, enc, ltp_scale,
+            );
             if !sat.iter().any(|&s| s) {
                 return (st, e2, bits, seed);
             }
@@ -788,7 +894,9 @@ impl ChannelEncoder {
                 }
             }
         }
-        let (st, e2, bits, seed, _) = self.trial_once(an, frame, nb_subfr, mult, &boost, cond, active, enc, ltp_scale);
+        let (st, e2, bits, seed, _) = self.trial_once(
+            an, frame, nb_subfr, mult, &boost, cond, active, enc, ltp_scale,
+        );
         (st, e2, bits, seed)
     }
 
@@ -818,9 +926,14 @@ impl ChannelEncoder {
         };
         // Gain targets: the step size tracks the residual level.
         // A step much above the signal itself only adds noise.
-        let cap = if mult > 64.0 { 63 } else { gain_index(an.level.max(1e-5) * 2.0 * 2_147_483_648.0) };
-        let targets: Vec<i32> =
-            (0..nb_subfr).map(|k| gain_index(an.sigma[k] * mult * boost[k] * 2_147_483_648.0).min(cap)).collect();
+        let cap = if mult > 64.0 {
+            63
+        } else {
+            gain_index(an.level.max(1e-5) * 2.0 * 2_147_483_648.0)
+        };
+        let targets: Vec<i32> = (0..nb_subfr)
+            .map(|k| gain_index(an.sigma[k] * mult * boost[k] * 2_147_483_648.0).min(cap))
+            .collect();
         let mut sat = [false; 4];
         let gains = code_gains(&targets, st.last_gain_index, cond);
         let ix = FrameIndices {
@@ -834,7 +947,11 @@ impl ChannelEncoder {
             contour: an.contour,
             periodicity: an.periodicity,
             ltp: an.ltp,
-            ltp_scale: if signal_type == SignalType::Voiced { ltp_scale } else { 0 },
+            ltp_scale: if signal_type == SignalType::Voiced {
+                ltp_scale
+            } else {
+                0
+            },
             seed: self.seed & 3,
         };
         let prev_type = st.prev_signal_type;
@@ -892,7 +1009,8 @@ impl ChannelEncoder {
                 let u = if flip { -want } else { want };
                 // Find q with (q << 8) - sign(q) * 20 + offset closest to u.
                 let x = (u - offset as f32) / 256.0;
-                let mut qi = (x.abs() - dead_zone + 0.5).floor().max(0.0) as i32 * if x < 0.0 { -1 } else { 1 };
+                let mut qi = (x.abs() - dead_zone + 0.5).floor().max(0.0) as i32
+                    * if x < 0.0 { -1 } else { 1 };
                 let rec = |qq: i32| (qq << 8) - qq.signum() * 20 + offset;
                 for cand in [qi - 1, qi + 1] {
                     let cost = |qq: i32| (rec(qq) as f32 - u).abs() + 64.0 * (qq.abs() as f32);
@@ -918,7 +1036,9 @@ impl ChannelEncoder {
             };
             st.synthesize_with(&params, nb_subfr, &mut choose);
         }
-        encode_indices(&mut e2, &ix, fs, nb_subfr, active, cond, prev_type, prev_lag);
+        encode_indices(
+            &mut e2, &ix, fs, nb_subfr, active, cond, prev_type, prev_lag,
+        );
         encode_pulses(&mut e2, &q, signal_type, 0);
         let bits = e2.tell_frac() - start_bits;
         (st, e2, bits, ix.seed, sat)
@@ -994,7 +1114,9 @@ impl SilkEncoder {
     fn prepare(&mut self, fs_khz: usize) {
         if fs_khz != self.fs_khz || self.ch.is_empty() {
             self.fs_khz = fs_khz;
-            self.ch = (0..self.channels).map(|_| ChannelEncoder::new(fs_khz)).collect();
+            self.ch = (0..self.channels)
+                .map(|_| ChannelEncoder::new(fs_khz))
+                .collect();
             self.prev_w = [0, 0];
             self.side_prev_uncoded = false;
             self.mid_tail = [0.0; 2];
@@ -1044,13 +1166,19 @@ impl SilkEncoder {
             for f in 0..nf {
                 let s0 = f * sub_len;
                 // Least squares for side ~ w0 * LP(mid) + w1 * mid.
-                let (mut a11, mut a12, mut a22, mut b1, mut b2, mut es, mut em) = (1e-9f64, 0.0, 1e-9, 0.0, 0.0, 0.0, 1e-12);
+                let (mut a11, mut a12, mut a22, mut b1, mut b2, mut es, mut em) =
+                    (1e-9f64, 0.0, 1e-9, 0.0, 0.0, 0.0, 1e-12);
                 for n in s0..s0 + sub_len {
                     let mm = |k: isize| -> f64 {
-                        if k < 0 { f64::from(self.mid_tail[(2 + k) as usize]) } else { f64::from(chans[0][k as usize]) }
+                        if k < 0 {
+                            f64::from(self.mid_tail[(2 + k) as usize])
+                        } else {
+                            f64::from(chans[0][k as usize])
+                        }
                     };
                     let m = mm(n as isize);
-                    let lp = 0.25 * (mm(n as isize - 1) + 2.0 * m + mm((n + 1).min(total - 1) as isize));
+                    let lp =
+                        0.25 * (mm(n as isize - 1) + 2.0 * m + mm((n + 1).min(total - 1) as isize));
                     let s = f64::from(chans[1][n]);
                     a11 += lp * lp;
                     a12 += lp * m;
@@ -1061,10 +1189,15 @@ impl SilkEncoder {
                     em += m * m;
                 }
                 let det = a11 * a22 - a12 * a12;
-                let (w0, w1) = if det.abs() > 1e-12 { ((b1 * a22 - b2 * a12) / det, (b2 * a11 - b1 * a12) / det) } else { (0.0, 0.0) };
+                let (w0, w1) = if det.abs() > 1e-12 {
+                    ((b1 * a22 - b2 * a12) / det, (b2 * a11 - b1 * a12) / det)
+                } else {
+                    (0.0, 0.0)
+                };
                 // Quantize w1 and w0 + w1 (Table 7 interpolation).
                 let (wi1, i3, q1) = quantize_weight(w1.clamp(-1.6, 1.6));
-                let (wi0, i1, q0s) = quantize_weight((w0 + f64::from(q1) / 8192.0).clamp(-1.6, 1.6));
+                let (wi0, i1, q0s) =
+                    quantize_weight((w0 + f64::from(q1) / 8192.0).clamp(-1.6, 1.6));
                 weights[f] = [q0s - q1, q1];
                 w_idx[f] = (wi0, i1, wi1, i3);
                 // Side residual with the decoder's interpolated weights.
@@ -1073,13 +1206,22 @@ impl SilkEncoder {
                 for j in 0..sub_len {
                     let n = s0 + j;
                     let pos = (j + 1).min(n1) as f64;
-                    let w0i = (f64::from(prev[0]) + pos * f64::from(weights[f][0] - prev[0]) / n1 as f64) / 8192.0;
-                    let w1i = (f64::from(prev[1]) + pos * f64::from(weights[f][1] - prev[1]) / n1 as f64) / 8192.0;
+                    let w0i = (f64::from(prev[0])
+                        + pos * f64::from(weights[f][0] - prev[0]) / n1 as f64)
+                        / 8192.0;
+                    let w1i = (f64::from(prev[1])
+                        + pos * f64::from(weights[f][1] - prev[1]) / n1 as f64)
+                        / 8192.0;
                     let mm = |k: isize| -> f64 {
-                        if k < 0 { f64::from(self.mid_tail[(2 + k) as usize]) } else { f64::from(chans[0][k as usize]) }
+                        if k < 0 {
+                            f64::from(self.mid_tail[(2 + k) as usize])
+                        } else {
+                            f64::from(chans[0][k as usize])
+                        }
                     };
                     let m = mm(n as isize);
-                    let lp = 0.25 * (mm(n as isize - 1) + 2.0 * m + mm((n + 1).min(total - 1) as isize));
+                    let lp =
+                        0.25 * (mm(n as isize - 1) + 2.0 * m + mm((n + 1).min(total - 1) as isize));
                     let r = f64::from(chans[1][n]) - w1i * m - w0i * lp;
                     chans[1][n] = r as f32;
                     res_e += r * r;
@@ -1132,7 +1274,11 @@ impl SilkEncoder {
         for ch in 0..c {
             if lbrr_flags[ch].iter().any(|&x| x) && nf > 1 {
                 let v: usize = (0..nf).map(|f| usize::from(lbrr_flags[ch][f]) << f).sum();
-                let table: &[u8] = if nf == 2 { &LBRR_FLAGS_2_ICDF } else { &LBRR_FLAGS_3_ICDF };
+                let table: &[u8] = if nf == 2 {
+                    &LBRR_FLAGS_2_ICDF
+                } else {
+                    &LBRR_FLAGS_3_ICDF
+                };
                 enc.icdf(v - 1, table, 8);
             }
         }
@@ -1148,7 +1294,16 @@ impl SilkEncoder {
                             enc.icdf(usize::from(self.lbrr_mid_only[f]), &MID_ONLY_ICDF, 8);
                         }
                     }
-                    encode_indices(enc, &lf.ix, fs_khz, nb_subfr, true, lf.cond, lf.prev_type, lf.prev_lag);
+                    encode_indices(
+                        enc,
+                        &lf.ix,
+                        fs_khz,
+                        nb_subfr,
+                        true,
+                        lf.cond,
+                        lf.prev_type,
+                        lf.prev_lag,
+                    );
                     encode_pulses(enc, &lf.q, lf.ix.signal_type, lf.ix.qoff);
                 }
             }
@@ -1187,8 +1342,16 @@ impl SilkEncoder {
                 } else {
                     1.0
                 };
-                let target = if ch == 1 { budget_bits - enc.tell() - (frames_left - 1) * frame_budget - 8 } else { (f64::from(frame_budget) * share) as i32 };
-                let mut cond = if f == 0 { CondCoding::Independent } else { CondCoding::Conditional };
+                let target = if ch == 1 {
+                    budget_bits - enc.tell() - (frames_left - 1) * frame_budget - 8
+                } else {
+                    (f64::from(frame_budget) * share) as i32
+                };
+                let mut cond = if f == 0 {
+                    CondCoding::Independent
+                } else {
+                    CondCoding::Conditional
+                };
                 if ch == 1 && self.side_prev_uncoded {
                     self.ch[1].state.reset(fs_khz);
                     if f > 0 {
@@ -1198,7 +1361,16 @@ impl SilkEncoder {
                 let snapshot = self.ch[ch].state.clone();
                 let an = analyses[ch][f].clone();
                 let frame = &frames[ch][f];
-                let (st, e2, mult) = self.rate_loop(ch, &an, frame, nb_subfr, cond, vad[ch][f], enc, target.max(16) * 8);
+                let (st, e2, mult) = self.rate_loop(
+                    ch,
+                    &an,
+                    frame,
+                    nb_subfr,
+                    cond,
+                    vad[ch][f],
+                    enc,
+                    target.max(16) * 8,
+                );
                 *enc = e2;
                 self.ch[ch].state = st;
                 self.ch[ch].seed = self.ch[ch].seed.wrapping_add(1);
@@ -1207,7 +1379,11 @@ impl SilkEncoder {
                 }
                 // LBRR copy at a coarser step, from the state before it.
                 if fec && vad[ch][f] {
-                    let lcond = if f > 0 && new_lbrr.get(f - 1).is_some_and(|x: &[Option<LbrrFrame>; 2]| x[ch].is_some()) {
+                    let lcond = if f > 0
+                        && new_lbrr
+                            .get(f - 1)
+                            .is_some_and(|x: &[Option<LbrrFrame>; 2]| x[ch].is_some())
+                    {
                         CondCoding::Conditional
                     } else {
                         CondCoding::Independent
@@ -1246,11 +1422,24 @@ impl SilkEncoder {
     }
 
     /// The indices and pulses of a frame coded at `mult` (for LBRR).
-    fn capture(ce: &ChannelEncoder, an: &Analysis, frame: &[f32], nb_subfr: usize, mult: f64, cond: CondCoding) -> LbrrFrame {
+    fn capture(
+        ce: &ChannelEncoder,
+        an: &Analysis,
+        frame: &[f32],
+        nb_subfr: usize,
+        mult: f64,
+        cond: CondCoding,
+    ) -> LbrrFrame {
         let prev_type = ce.state.prev_signal_type;
         let prev_lag = ce.state.prev_lag;
         let (ix, q) = ce.indices_and_pulses(an, frame, nb_subfr, mult, cond, true);
-        LbrrFrame { ix, q, cond, prev_type, prev_lag }
+        LbrrFrame {
+            ix,
+            q,
+            cond,
+            prev_type,
+            prev_lag,
+        }
     }
 
     fn encode_weight_indices(enc: &mut RangeEncoder, idx: [i32; 5]) {
@@ -1334,7 +1523,15 @@ impl ChannelEncoder {
         let bytes = e2.finish();
         let mut dec = crate::range::RangeDecoder::new(&bytes);
         let fs = self.state.fs_khz;
-        let ix = super::decoder::decode_indices(&mut dec, fs, nb_subfr, active, cond, self.state.prev_signal_type, self.state.prev_lag);
+        let ix = super::decoder::decode_indices(
+            &mut dec,
+            fs,
+            nb_subfr,
+            active,
+            cond,
+            self.state.prev_signal_type,
+            self.state.prev_lag,
+        );
         let raw = super::decoder::decode_pulses(&mut dec, ix.signal_type, ix.qoff, frame.len());
         (ix, raw)
     }
@@ -1358,11 +1555,24 @@ mod tests {
         let p: Vec<f64> = (0..=d + 1).map(|k| c[k] + c[d + 1 - k]).collect();
         let q: Vec<f64> = (0..=d + 1).map(|k| c[k] - c[d + 1 - k]).collect();
         let half = (d + 1) as f64 / 2.0;
-        let fp = |w: f64| -> f64 { p.iter().enumerate().map(|(k, v)| v * (w * (half - k as f64)).cos()).sum() };
-        let fq = |w: f64| -> f64 { q.iter().enumerate().map(|(k, v)| v * (w * (half - k as f64)).sin()).sum() };
+        let fp = |w: f64| -> f64 {
+            p.iter()
+                .enumerate()
+                .map(|(k, v)| v * (w * (half - k as f64)).cos())
+                .sum()
+        };
+        let fq = |w: f64| -> f64 {
+            q.iter()
+                .enumerate()
+                .map(|(k, v)| v * (w * (half - k as f64)).sin())
+                .sum()
+        };
         let grid = 2048;
         let mut roots: Vec<(f64, bool)> = Vec::with_capacity(d);
-        for (is_p, f) in [(true, &fp as &dyn Fn(f64) -> f64), (false, &fq as &dyn Fn(f64) -> f64)] {
+        for (is_p, f) in [
+            (true, &fp as &dyn Fn(f64) -> f64),
+            (false, &fq as &dyn Fn(f64) -> f64),
+        ] {
             let mut prev_w = 1e-6;
             let mut prev_v = f(prev_w);
             for j in 1..grid {
@@ -1395,9 +1605,17 @@ mod tests {
                 return None;
             }
         }
-        Some(roots.iter().map(|r| ((r.0 / std::f64::consts::PI) * 32768.0).round().clamp(1.0, 32767.0) as i32).collect())
+        Some(
+            roots
+                .iter()
+                .map(|r| {
+                    ((r.0 / std::f64::consts::PI) * 32768.0)
+                        .round()
+                        .clamp(1.0, 32767.0) as i32
+                })
+                .collect(),
+        )
     }
-
 
     /// The correlations across lags equal `ncorr` lag by lag, bit for bit.
     #[test]
@@ -1409,11 +1627,21 @@ mod tests {
                 (s >> 8) as f32 / (1u32 << 24) as f32 - 0.5
             })
             .collect();
-        for (start, len, lag0, count) in [(640, 320, 32, 256), (640, 80, 16, 7), (400, 1, 3, 9), (300, 0, 5, 5)] {
+        for (start, len, lag0, count) in [
+            (640, 320, 32, 256),
+            (640, 80, 16, 7),
+            (400, 1, 3, 9),
+            (300, 0, 5, 5),
+        ] {
             let mut out = vec![0.0; count];
             ncorr_lags(&r, start, len, lag0, &mut out);
             for (j, &o) in out.iter().enumerate() {
-                assert_eq!(o.to_bits(), ncorr(&r, start, len, lag0 + j).to_bits(), "{start} {len} lag {}", lag0 + j);
+                assert_eq!(
+                    o.to_bits(),
+                    ncorr(&r, start, len, lag0 + j).to_bits(),
+                    "{start} {len} lag {}",
+                    lag0 + j
+                );
             }
         }
     }

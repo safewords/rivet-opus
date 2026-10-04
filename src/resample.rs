@@ -94,7 +94,12 @@ fn kernel(in_rate: usize, out_rate: usize, delay_ms: f64) -> Arc<Kernel> {
     static CACHE: OnceLock<Cache> = OnceLock::new();
     let key = (in_rate, out_rate, delay_ms.to_bits());
     let cache = CACHE.get_or_init(Default::default);
-    if let Some((_, k)) = cache.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|(k, _)| *k == key) {
+    if let Some((_, k)) = cache
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .find(|(k, _)| *k == key)
+    {
         return k.clone();
     }
     let k = Arc::new(design_kernel(in_rate, out_rate, delay_ms));
@@ -112,7 +117,11 @@ fn gcd(a: usize, b: usize) -> usize {
 
 /// `∫_a^b cos(ωk) dω`.
 fn int_cos(a: f64, b: f64, k: f64) -> f64 {
-    if k.abs() < 1e-12 { b - a } else { ((b * k).sin() - (a * k).sin()) / k }
+    if k.abs() < 1e-12 {
+        b - a
+    } else {
+        ((b * k).sin() - (a * k).sin()) / k
+    }
 }
 
 /// Solves `R x = p` for symmetric positive definite `R` (row-major, `n×n`)
@@ -162,7 +171,10 @@ pub(crate) fn design(n: usize, wp: f64, ws: f64, wf: f64, tau: f64, gain: f64) -
     let row: Vec<f64> = (0..n)
         .map(|k| {
             let k = k as f64;
-            int_cos(0.0, wp, k) + tw * int_cos(wp, we, k) + near_w * int_cos(we, wf, k) + stop_w * int_cos(wf, PI, k)
+            int_cos(0.0, wp, k)
+                + tw * int_cos(wp, we, k)
+                + near_w * int_cos(we, wf, k)
+                + stop_w * int_cos(wf, PI, k)
         })
         .collect();
     let mut r = vec![0.0; n * n];
@@ -187,7 +199,13 @@ pub(crate) fn design(n: usize, wp: f64, ws: f64, wf: f64, tau: f64, gain: f64) -
             for i in 0..=steps {
                 let w = wp + i as f64 * h;
                 let a = 0.5 + 0.5 * (PI * (w - wp) / (ws - wp)).cos();
-                let c = if i == 0 || i == steps { 1.0 } else if i % 2 == 1 { 4.0 } else { 2.0 };
+                let c = if i == 0 || i == steps {
+                    1.0
+                } else if i % 2 == 1 {
+                    4.0
+                } else {
+                    2.0
+                };
                 t += c * a * (w * k).cos();
             }
             gain * (int_cos(0.0, wp, k) + tw * t * h / 3.0)
@@ -205,7 +223,10 @@ fn design_kernel(in_rate: usize, out_rate: usize, delay_ms: f64) -> Kernel {
         // exactly these delays while using a whole number of input or
         // output samples"): a transparent delay line.
         let d = (delay_ms * in_rate as f64 / 1000.0).round() as usize;
-        return Kernel { taps: vec![vec![1.0]], first: vec![-(d as isize)] };
+        return Kernel {
+            taps: vec![vec![1.0]],
+            first: vec![-(d as isize)],
+        };
     }
     let up = out_rate / g; // L
     let down = in_rate / g; // M
@@ -245,8 +266,20 @@ impl Resampler {
     pub fn new(in_rate: usize, out_rate: usize, delay_ms: f64) -> Self {
         let kernel = kernel(in_rate, out_rate, delay_ms);
         let g = gcd(in_rate, out_rate);
-        let reach = kernel.first.iter().map(|&f| (-f).max(0) as usize).max().unwrap_or(0) + 1;
-        Self { in_rate, phases: out_rate / g, in_step: in_rate / g, kernel, hist: vec![0.0; reach] }
+        let reach = kernel
+            .first
+            .iter()
+            .map(|&f| (-f).max(0) as usize)
+            .max()
+            .unwrap_or(0)
+            + 1;
+        Self {
+            in_rate,
+            phases: out_rate / g,
+            in_step: in_rate / g,
+            kernel,
+            hist: vec![0.0; reach],
+        }
     }
 
     /// The input rate.
@@ -332,7 +365,10 @@ mod tests {
         for (p, (taps, &first)) in r.kernel.taps.iter().zip(&r.kernel.first).enumerate() {
             let t = (p * r.in_step) as isize;
             for (k, &v) in taps.iter().enumerate() {
-                pairs.push(((t - (first + k as isize) * up as isize) as usize, f64::from(v) / up as f64));
+                pairs.push((
+                    (t - (first + k as isize) * up as isize) as usize,
+                    f64::from(v) / up as f64,
+                ));
             }
         }
         let mut h = vec![0.0f64; pairs.iter().map(|&(i, _)| i + 1).max().unwrap()];
@@ -342,7 +378,9 @@ mod tests {
         let len = h.len();
         let resp = |f: f64| {
             let w = 2.0 * PI * f / f_hi;
-            h.iter().enumerate().fold((0.0, 0.0), |(re, im), (k, &v)| (re + v * (w * k as f64).cos(), im - v * (w * k as f64).sin()))
+            h.iter().enumerate().fold((0.0, 0.0), |(re, im), (k, &v)| {
+                (re + v * (w * k as f64).cos(), im - v * (w * k as f64).sin())
+            })
         };
         let gain_db = |f: f64| {
             let (re, im) = resp(f);
@@ -386,7 +424,14 @@ mod tests {
             }
             (near, far)
         });
-        Response { taps: len, taps_per_phase: r.kernel.taps.iter().map(Vec::len).max().unwrap(), ripple_db: ripple, delay_err_ms: delay_err, edge_db: gain_db(fc), stop_db: stop }
+        Response {
+            taps: len,
+            taps_per_phase: r.kernel.taps.iter().map(Vec::len).max().unwrap(),
+            ripple_db: ripple,
+            delay_err_ms: delay_err,
+            edge_db: gain_db(fc),
+            stop_db: stop,
+        }
     }
 
     /// Passband flat to ±0.8 dB, group delay within 0.04 ms of the target
@@ -399,14 +444,34 @@ mod tests {
             let m = measure(fin, fout, d);
             if fin == fout {
                 // A pure delay of the nearest whole number of samples.
-                assert!(m.ripple_db < 1e-4 && m.delay_err_ms <= 500.0 / fin as f64, "{fin}: {} {}", m.ripple_db, m.delay_err_ms);
+                assert!(
+                    m.ripple_db < 1e-4 && m.delay_err_ms <= 500.0 / fin as f64,
+                    "{fin}: {} {}",
+                    m.ripple_db,
+                    m.delay_err_ms
+                );
                 continue;
             }
-            assert!(m.ripple_db < 0.8, "{fin}->{fout}: ripple {:.3} dB", m.ripple_db);
-            assert!(m.delay_err_ms < 0.04, "{fin}->{fout}: delay error {:.4} ms", m.delay_err_ms);
-            assert!((m.edge_db + 6.0).abs() < 1.5, "{fin}->{fout}: {:.2} dB at the edge", m.edge_db);
+            assert!(
+                m.ripple_db < 0.8,
+                "{fin}->{fout}: ripple {:.3} dB",
+                m.ripple_db
+            );
+            assert!(
+                m.delay_err_ms < 0.04,
+                "{fin}->{fout}: delay error {:.4} ms",
+                m.delay_err_ms
+            );
+            assert!(
+                (m.edge_db + 6.0).abs() < 1.5,
+                "{fin}->{fout}: {:.2} dB at the edge",
+                m.edge_db
+            );
             if let Some((near, far)) = m.stop_db {
-                assert!(near > 30.0 && far > 60.0, "{fin}->{fout}: stopband {near:.1} / {far:.1} dB");
+                assert!(
+                    near > 30.0 && far > 60.0,
+                    "{fin}->{fout}: stopband {near:.1} / {far:.1} dB"
+                );
             }
         }
     }
@@ -415,11 +480,15 @@ mod tests {
     #[test]
     #[ignore]
     fn print_response_table() {
-        println!("| in → out | delay (ms) | taps (per branch) | passband ripple | delay error | at fc | near stopband | far stopband |");
+        println!(
+            "| in → out | delay (ms) | taps (per branch) | passband ripple | delay error | at fc | near stopband | far stopband |"
+        );
         println!("|---|---|---|---|---|---|---|---|");
         for (fin, fout, d) in converters() {
             let m = measure(fin, fout, d);
-            let stop = m.stop_db.map_or("— | —".to_string(), |(n, f)| format!("{n:.1} dB | {f:.1} dB"));
+            let stop = m.stop_db.map_or("— | —".to_string(), |(n, f)| {
+                format!("{n:.1} dB | {f:.1} dB")
+            });
             println!(
                 "| {} → {} kHz | {d} | {} ({}) | ±{:.2} dB | {:.3} ms | {:.1} dB | {stop} |",
                 fin / 1000,
@@ -442,7 +511,9 @@ mod tests {
             let mut r = Resampler::new(fin, fout, d);
             let f = 500.0;
             let n = fin / 5;
-            let x: Vec<f32> = (0..n).map(|i| (2.0 * PI * f * i as f64 / fin as f64).sin() as f32).collect();
+            let x: Vec<f32> = (0..n)
+                .map(|i| (2.0 * PI * f * i as f64 / fin as f64).sin() as f32)
+                .collect();
             let mut y = Vec::new();
             for chunk in x.chunks(fin / 100) {
                 r.process(chunk, &mut y);
@@ -450,8 +521,15 @@ mod tests {
             assert_eq!(y.len(), n * fout / fin);
             let mut whole = Vec::new();
             Resampler::new(fin, fout, d).process(&x, &mut whole);
-            assert!(y.iter().zip(&whole).all(|(a, b)| (a - b).abs() < 1e-5), "{fin}->{fout}: blocks differ");
-            let d = if fin == fout { (d * fin as f64 / 1000.0).round() * 1000.0 / fin as f64 } else { d };
+            assert!(
+                y.iter().zip(&whole).all(|(a, b)| (a - b).abs() < 1e-5),
+                "{fin}->{fout}: blocks differ"
+            );
+            let d = if fin == fout {
+                (d * fin as f64 / 1000.0).round() * 1000.0 / fin as f64
+            } else {
+                d
+            };
             let mut err = 0.0f64;
             for (m, &v) in y.iter().enumerate().skip(fout / 25) {
                 let want = (2.0 * PI * f * (m as f64 / fout as f64 - d / 1000.0)).sin();
