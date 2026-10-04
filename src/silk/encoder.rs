@@ -254,6 +254,49 @@ fn lpc_analysis(x: &[f32], d: usize) -> Vec<f64> {
     a
 }
 
+/// The root-search grid of [`lpc_to_nlsf`]: points `pi j / NLSF_GRID`.
+const NLSF_GRID: usize = 2048;
+
+/// `cos(w_j (half - k))` and `sin(w_j (half - k))` at every grid point
+/// `w_j = pi j / NLSF_GRID` (`j = 1..NLSF_GRID`) for `k = 0..=half`, where
+/// `half = (d + 1) / 2`: the same products and the same calls as the direct
+/// evaluation, made once per order instead of on every frame. The terms
+/// for `k > half` are their mirror images (`half - k` changes sign
+/// exactly), which cosine keeps and sine negates.
+struct NlsfGrid {
+    terms: usize,
+    cos: Vec<f64>,
+    sin: Vec<f64>,
+}
+
+impl NlsfGrid {
+    fn build(d: usize) -> Self {
+        let half = (d + 1) as f64 / 2.0;
+        let terms = d / 2 + 1;
+        let mut cos = Vec::with_capacity(NLSF_GRID * terms);
+        let mut sin = Vec::with_capacity(NLSF_GRID * terms);
+        for j in 0..NLSF_GRID {
+            let w = std::f64::consts::PI * j as f64 / NLSF_GRID as f64;
+            for k in 0..terms {
+                let x = w * (half - k as f64);
+                cos.push(x.cos());
+                sin.push(x.sin());
+            }
+        }
+        Self { terms, cos, sin }
+    }
+
+    fn get(d: usize) -> &'static Self {
+        static G10: std::sync::OnceLock<NlsfGrid> = std::sync::OnceLock::new();
+        static G16: std::sync::OnceLock<NlsfGrid> = std::sync::OnceLock::new();
+        match d {
+            10 => G10.get_or_init(|| Self::build(10)),
+            16 => G16.get_or_init(|| Self::build(16)),
+            _ => unreachable!("SILK LPC order {d}"),
+        }
+    }
+}
+
 /// Normalized LSFs (Q15) of an LPC filter, or `None` if the roots could not
 /// be separated.
 fn lpc_to_nlsf(a: &[f64]) -> Option<Vec<i32>> {
@@ -268,14 +311,26 @@ fn lpc_to_nlsf(a: &[f64]) -> Option<Vec<i32>> {
     let half = (d + 1) as f64 / 2.0;
     let fp = |w: f64| -> f64 { p.iter().enumerate().map(|(k, v)| v * (w * (half - k as f64)).cos()).sum() };
     let fq = |w: f64| -> f64 { q.iter().enumerate().map(|(k, v)| v * (w * (half - k as f64)).sin()).sum() };
-    let grid = 2048;
+    let grid = NlsfGrid::get(d);
+    let t = grid.terms;
+    // Grid values from the table, summed in the same order as `fp` / `fq`.
+    let gp = |j: usize| -> f64 {
+        let row = &grid.cos[j * t..(j + 1) * t];
+        p.iter().enumerate().map(|(k, v)| v * row[if k < t { k } else { d + 1 - k }]).sum()
+    };
+    let gq = |j: usize| -> f64 {
+        let row = &grid.sin[j * t..(j + 1) * t];
+        q.iter().enumerate().map(|(k, v)| v * if k < t { row[k] } else { -row[d + 1 - k] }).sum()
+    };
     let mut roots: Vec<(f64, bool)> = Vec::with_capacity(d);
-    for (is_p, f) in [(true, &fp as &dyn Fn(f64) -> f64), (false, &fq as &dyn Fn(f64) -> f64)] {
+    for (is_p, f, g) in
+        [(true, &fp as &dyn Fn(f64) -> f64, &gp as &dyn Fn(usize) -> f64), (false, &fq as &dyn Fn(f64) -> f64, &gq as &dyn Fn(usize) -> f64)]
+    {
         let mut prev_w = 1e-6;
         let mut prev_v = f(prev_w);
-        for j in 1..grid {
-            let w = std::f64::consts::PI * j as f64 / grid as f64;
-            let v = f(w);
+        for j in 1..NLSF_GRID {
+            let w = std::f64::consts::PI * j as f64 / NLSF_GRID as f64;
+            let v = g(j);
             if prev_v == 0.0 || prev_v.signum() != v.signum() {
                 let (mut lo, mut hi, mut flo) = (prev_w, w, prev_v);
                 for _ in 0..30 {
@@ -1227,6 +1282,84 @@ mod tests {
     use super::*;
     use crate::packet::Bandwidth;
     use crate::silk::SilkDecoder;
+
+    /// The direct root search the grid table replaced (every grid point's
+    /// cosines and sines computed on the spot).
+    fn lpc_to_nlsf_direct(a: &[f64]) -> Option<Vec<i32>> {
+        let d = a.len();
+        let mut c = vec![0.0f64; d + 2];
+        c[0] = 1.0;
+        for k in 1..=d {
+            c[k] = -a[k - 1];
+        }
+        let p: Vec<f64> = (0..=d + 1).map(|k| c[k] + c[d + 1 - k]).collect();
+        let q: Vec<f64> = (0..=d + 1).map(|k| c[k] - c[d + 1 - k]).collect();
+        let half = (d + 1) as f64 / 2.0;
+        let fp = |w: f64| -> f64 { p.iter().enumerate().map(|(k, v)| v * (w * (half - k as f64)).cos()).sum() };
+        let fq = |w: f64| -> f64 { q.iter().enumerate().map(|(k, v)| v * (w * (half - k as f64)).sin()).sum() };
+        let grid = 2048;
+        let mut roots: Vec<(f64, bool)> = Vec::with_capacity(d);
+        for (is_p, f) in [(true, &fp as &dyn Fn(f64) -> f64), (false, &fq as &dyn Fn(f64) -> f64)] {
+            let mut prev_w = 1e-6;
+            let mut prev_v = f(prev_w);
+            for j in 1..grid {
+                let w = std::f64::consts::PI * j as f64 / grid as f64;
+                let v = f(w);
+                if prev_v == 0.0 || prev_v.signum() != v.signum() {
+                    let (mut lo, mut hi, mut flo) = (prev_w, w, prev_v);
+                    for _ in 0..30 {
+                        let mid = 0.5 * (lo + hi);
+                        let fm = f(mid);
+                        if fm.signum() == flo.signum() {
+                            lo = mid;
+                            flo = fm;
+                        } else {
+                            hi = mid;
+                        }
+                    }
+                    roots.push((0.5 * (lo + hi), is_p));
+                }
+                prev_w = w;
+                prev_v = v;
+            }
+        }
+        roots.sort_by(|x, y| x.0.total_cmp(&y.0));
+        if roots.len() != d {
+            return None;
+        }
+        for (i, r) in roots.iter().enumerate() {
+            if r.1 != (i % 2 == 0) {
+                return None;
+            }
+        }
+        Some(roots.iter().map(|r| ((r.0 / std::f64::consts::PI) * 32768.0).round().clamp(1.0, 32767.0) as i32).collect())
+    }
+
+
+    /// The tabled grid finds bit-identical NLSFs to the direct evaluation.
+    #[test]
+    fn lpc_to_nlsf_matches_direct_evaluation() {
+        let mut s = 12345u32;
+        let mut rnd = || {
+            s = s.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (s >> 8) as f32 / (1u32 << 24) as f32 - 0.5
+        };
+        let mut found = 0;
+        for trial in 0..400 {
+            let d = if trial % 2 == 0 { 10 } else { 16 };
+            // LPC of a random coloured block, as the analysis makes it.
+            let mut x = vec![0.0f32; 400];
+            let (c1, c2) = (rnd() * 1.6, rnd() * 0.8);
+            for i in 2..x.len() {
+                x[i] = rnd() + c1 * x[i - 1] - c2 * x[i - 2] * c2.signum();
+            }
+            let a = lpc_analysis(&x, d);
+            let got = lpc_to_nlsf(&a);
+            assert_eq!(got, lpc_to_nlsf_direct(&a), "trial {trial}");
+            found += usize::from(got.is_some());
+        }
+        assert!(found > 300);
+    }
 
     fn speechish(n: usize, fs: f32) -> Vec<f32> {
         let mut out = vec![0.0f32; n];
