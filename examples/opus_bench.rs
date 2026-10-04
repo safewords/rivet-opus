@@ -2,7 +2,7 @@
 //! decoded audio back in CELT, SILK and hybrid modes, printing how many
 //! times faster than real time each runs (best of several passes).
 //!
-//! `cargo run --release --example bench -- <vector dir> [passes] [mode filter]`
+//! `cargo run --release --example opus_bench -- <vector dir> [passes] [mode filter]`
 
 use std::path::Path;
 use std::time::Instant;

@@ -156,7 +156,7 @@ The second run compiles the vector paths out; both must pass unchanged.
 
 ## Performance
 
-On a Ryzen 9 9950X (one thread, `cargo run --release --example bench --
+On a Ryzen 9 9950X (one thread, `cargo run --release --example opus_bench --
 <vector dir>`): decoding all twelve RFC 8251 vectors at 48 kHz stereo runs
 about 600x real time; encoding stereo music about 290x (CELT 128 kb/s),
 420x (CELT 64 kb/s), 45x (hybrid 32 kb/s) and 90x (SILK 16 kb/s).
