@@ -528,9 +528,9 @@ fn ncorr_lags(r: &[f32], start: usize, len: usize, lag0: usize, out: &mut [f64])
         xx += f64::from(v) * f64::from(v);
     }
     let finish = |xy: f64, yy: f64| if xx <= 1e-12 || yy <= 1e-12 { 0.0 } else { xy / (xx * yy).sqrt() };
-    let mut chunks = out.chunks_exact_mut(B);
+    let (chunks, rest) = out.as_chunks_mut::<B>();
     let mut lag = lag0;
-    for o in &mut chunks {
+    for o in chunks {
         let (mut xy, mut yy) = ([0.0f64; B], [0.0f64; B]);
         // y[j] = r[n - lag - j]: the window ending at `n - lag`, reversed.
         for n in start..start + len {
@@ -547,7 +547,7 @@ fn ncorr_lags(r: &[f32], start: usize, len: usize, lag0: usize, out: &mut [f64])
         }
         lag += B;
     }
-    for (j, o) in chunks.into_remainder().iter_mut().enumerate() {
+    for (j, o) in rest.iter_mut().enumerate() {
         *o = ncorr(r, start, len, lag + j);
     }
 }

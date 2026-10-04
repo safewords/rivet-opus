@@ -27,6 +27,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Tests
         run: cargo test --release
+      # The portable kernels alone (the AVX2 / NEON ones compiled out); they
+      # give bit-identical results, so every test must pass unchanged.
+      - name: Tests (force-scalar)
+        if: matrix.os == 'ubuntu-latest' || matrix.os == 'ubuntu-24.04-arm'
+        run: cargo test --release --features force-scalar
 
   # The official test vectors (RFC 8251 set) are data, not code: the
   # decoder must reproduce the reference's final range coder state on every
@@ -49,6 +54,10 @@ jobs:
         run: cargo test --release --test vectors -- --nocapture
         env:
           OPUS_REQUIRE_VECTORS: "1"
+      - name: Tests (force-scalar)
+        run: cargo test --release --features force-scalar --test vectors
+        env:
+          OPUS_REQUIRE_VECTORS: "1"
 
   msrv:
     name: MSRV (1.99)
@@ -69,6 +78,7 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo clippy --all-targets --features force-scalar -- -D warnings
       - run: cargo doc --no-deps
         env:
           RUSTDOCFLAGS: -D warnings

@@ -42,14 +42,14 @@ pub(crate) fn dot(a: &[f32], b: &[f32]) -> f32 {
 pub(crate) fn dot_scalar(a: &[f32], b: &[f32]) -> f32 {
     let b = &b[..a.len()];
     let mut acc = [0.0f32; LANES];
-    let mut ca = a.chunks_exact(LANES);
-    let mut cb = b.chunks_exact(LANES);
-    for (x, y) in (&mut ca).zip(&mut cb) {
+    let (ca, ra) = a.as_chunks::<LANES>();
+    let (cb, rb) = b.as_chunks::<LANES>();
+    for (x, y) in ca.iter().zip(cb) {
         for j in 0..LANES {
             acc[j] += x[j] * y[j];
         }
     }
-    for (j, (x, y)) in ca.remainder().iter().zip(cb.remainder()).enumerate() {
+    for (j, (x, y)) in ra.iter().zip(rb).enumerate() {
         acc[j] += x * y;
     }
     reduce(acc)

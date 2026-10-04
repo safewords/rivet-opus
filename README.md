@@ -141,6 +141,20 @@ against their defining sums and TDAC reconstruction; the pulse cache;
 power-complementary window; SILK tables, NLSF weights, stabilisation and
 filter stability; packet rules [R1]–[R7] and self-delimited framing.
 
+## Performance
+
+On a Ryzen 9 9950X (one thread, `cargo run --release --example bench --
+<vector dir>`): decoding all twelve RFC 8251 vectors at 48 kHz stereo runs
+about 600x real time; encoding stereo music about 290x (CELT 128 kb/s),
+420x (CELT 64 kb/s), 45x (hybrid 32 kb/s) and 90x (SILK 16 kb/s).
+
+The few vector kernels (`src/simd.rs`: AVX2 on x86-64, NEON on AArch64,
+chosen at run time) multiply and add separately in eight lanes and reduce
+in a fixed order, exactly as their portable versions do, so the decoded
+output and the encoded packets are the same on every CPU. The
+`force-scalar` feature compiles the vector paths out; CI runs the tests
+both ways.
+
 ## Provenance and licensing
 
 Written from the RFCs' text. libopus, FFmpeg and other implementations were
