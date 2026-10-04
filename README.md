@@ -141,6 +141,19 @@ against their defining sums and TDAC reconstruction; the pulse cache;
 power-complementary window; SILK tables, NLSF weights, stabilisation and
 filter stability; packet rules [R1]–[R7] and self-delimited framing.
 
+### NEON on ARM hardware
+
+CI runs on x86-64 Linux only, so the NEON (aarch64) code paths are not tested
+there. They are verified by hand on ARM hardware (an aarch64 Linux machine,
+or Apple silicon) after a change to them and before a release:
+
+```sh
+cargo test --release
+cargo test --release --features force-scalar
+```
+
+The second run compiles the vector paths out; both must pass unchanged.
+
 ## Performance
 
 On a Ryzen 9 9950X (one thread, `cargo run --release --example bench --
