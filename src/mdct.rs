@@ -27,13 +27,46 @@ impl Complex {
     }
 }
 
+/// One radix-`p` pass of the Stockham autosort FFT (decimation in
+/// frequency): with the current sub-transform length `n = p·m` and stride
+/// `s`, `y[k + s(p·q + t)] = w_n^{q·t} · Σ_r x[k + s(q + r·m)] · w_p^{r·t}`.
+struct Pass {
+    p: usize,
+    m: usize,
+    s: usize,
+    /// `w_n^{q·t}` for `q < m`, `1 <= t < p`, by `q` then `t`.
+    tw: Vec<Complex>,
+}
+
 /// A forward complex FFT of a fixed size whose prime factors are 2, 3 and 5.
 pub(crate) struct Fft {
     n: usize,
-    factors: Vec<usize>,
-    /// `e^{-2 pi i j / n}`.
-    twiddles: Vec<Complex>,
+    passes: Vec<Pass>,
 }
+
+fn unit(a: f64) -> Complex {
+    Complex { re: a.cos() as f32, im: a.sin() as f32 }
+}
+
+/// `-i·z`.
+#[inline(always)]
+fn mul_neg_i(z: Complex) -> Complex {
+    Complex { re: z.im, im: -z.re }
+}
+
+#[inline(always)]
+fn sub(a: Complex, b: Complex) -> Complex {
+    Complex { re: a.re - b.re, im: a.im - b.im }
+}
+
+#[inline(always)]
+fn scale(a: Complex, f: f32) -> Complex {
+    Complex { re: a.re * f, im: a.im * f }
+}
+
+/// The largest FFT the codec runs (the 960-coefficient MDCT's), whose
+/// scratch lives on the stack.
+const MAX_STACK_FFT: usize = MAX_MDCT / 2;
 
 impl Fft {
     pub fn new(n: usize) -> Self {
@@ -46,49 +79,142 @@ impl Fft {
             }
         }
         assert_eq!(m, 1, "FFT size {n} has a prime factor above 5");
-        let twiddles = (0..n)
-            .map(|j| {
-                let a = -2.0 * std::f64::consts::PI * j as f64 / n as f64;
-                Complex { re: a.cos() as f32, im: a.sin() as f32 }
-            })
-            .collect();
-        Self { n, factors, twiddles }
+        let mut passes = Vec::with_capacity(factors.len());
+        let (mut len, mut s) = (n, 1);
+        for &p in &factors {
+            let m = len / p;
+            let mut tw = Vec::with_capacity(m * (p - 1));
+            for q in 0..m {
+                for t in 1..p {
+                    tw.push(unit(-2.0 * std::f64::consts::PI * (q * t) as f64 / len as f64));
+                }
+            }
+            passes.push(Pass { p, m, s, tw });
+            len = m;
+            s *= p;
+        }
+        Self { n, passes }
     }
 
     /// `out = FFT(inp)`.
     pub fn process(&self, inp: &[Complex], out: &mut [Complex]) {
-        self.work(out, inp, 0, 1, 0);
-    }
-
-    fn work(&self, out: &mut [Complex], inp: &[Complex], offset: usize, stride: usize, level: usize) {
-        let n = out.len();
-        if n == 1 {
-            out[0] = inp[offset];
+        let n = self.n;
+        let (inp, out) = (&inp[..n], &mut out[..n]);
+        if self.passes.is_empty() {
+            out[0] = inp[0];
             return;
         }
-        let p = self.factors[level];
-        let m = n / p;
-        for q in 0..p {
-            self.work(&mut out[q * m..(q + 1) * m], inp, offset + q * stride, stride * p, level + 1);
-        }
-        let tw_step = self.n / n;
-        let mut a = [Complex::default(); 5];
-        for k in 0..m {
-            for q in 0..p {
-                let t = self.twiddles[(q * k * tw_step) % self.n];
-                a[q] = out[q * m + k].mul(t);
+        let mut stack = [Complex::default(); MAX_STACK_FFT];
+        let mut heap = Vec::new();
+        let tmp: &mut [Complex] = if n <= MAX_STACK_FFT {
+            &mut stack[..n]
+        } else {
+            heap.resize(n, Complex::default());
+            &mut heap
+        };
+        // The passes ping-pong between `out` and `tmp`, starting from `inp`,
+        // so that the last one writes `out`.
+        let mut to_out = self.passes.len() % 2 == 1;
+        for (i, pass) in self.passes.iter().enumerate() {
+            match (i == 0, to_out) {
+                (true, true) => pass.run(inp, out),
+                (true, false) => pass.run(inp, tmp),
+                (false, true) => pass.run(tmp, out),
+                (false, false) => pass.run(out, tmp),
             }
-            for q2 in 0..p {
-                let mut s = Complex::default();
-                for (q, aq) in a.iter().enumerate().take(p) {
-                    let idx = ((q * q2) % p) * (self.n / p);
-                    s = s.add(aq.mul(self.twiddles[idx]));
+            to_out = !to_out;
+        }
+    }
+}
+
+impl Pass {
+    fn run(&self, x: &[Complex], y: &mut [Complex]) {
+        let (m, s) = (self.m, self.s);
+        match self.p {
+            2 => {
+                for q in 0..m {
+                    let w1 = self.tw[q];
+                    for k in 0..s {
+                        let a = x[k + s * q];
+                        let b = x[k + s * (q + m)];
+                        y[k + s * 2 * q] = a.add(b);
+                        y[k + s * (2 * q + 1)] = sub(a, b).mul(w1);
+                    }
                 }
-                out[q2 * m + k] = s;
+            }
+            3 => {
+                // w_3 = -1/2 - i·sqrt(3)/2.
+                let h = 0.75f64.sqrt() as f32;
+                for q in 0..m {
+                    let (w1, w2) = (self.tw[2 * q], self.tw[2 * q + 1]);
+                    for k in 0..s {
+                        let a0 = x[k + s * q];
+                        let a1 = x[k + s * (q + m)];
+                        let a2 = x[k + s * (q + 2 * m)];
+                        let t1 = a1.add(a2);
+                        let t2 = sub(a0, scale(t1, 0.5));
+                        // (a1 - a2)·(-i·sqrt(3)/2)
+                        let t3 = mul_neg_i(scale(sub(a1, a2), h));
+                        y[k + s * 3 * q] = a0.add(t1);
+                        y[k + s * (3 * q + 1)] = t2.add(t3).mul(w1);
+                        y[k + s * (3 * q + 2)] = sub(t2, t3).mul(w2);
+                    }
+                }
+            }
+            4 => {
+                for q in 0..m {
+                    let (w1, w2, w3) = (self.tw[3 * q], self.tw[3 * q + 1], self.tw[3 * q + 2]);
+                    for k in 0..s {
+                        let a0 = x[k + s * q];
+                        let a1 = x[k + s * (q + m)];
+                        let a2 = x[k + s * (q + 2 * m)];
+                        let a3 = x[k + s * (q + 3 * m)];
+                        let b0 = a0.add(a2);
+                        let b1 = sub(a0, a2);
+                        let b2 = a1.add(a3);
+                        let b3 = mul_neg_i(sub(a1, a3));
+                        y[k + s * 4 * q] = b0.add(b2);
+                        y[k + s * (4 * q + 1)] = b1.add(b3).mul(w1);
+                        y[k + s * (4 * q + 2)] = sub(b0, b2).mul(w2);
+                        y[k + s * (4 * q + 3)] = sub(b1, b3).mul(w3);
+                    }
+                }
+            }
+            _ => {
+                // Radix 5, with w_5^t = cos(2πt/5) - i·sin(2πt/5).
+                let c1 = (0.4 * std::f64::consts::PI).cos() as f32;
+                let c2 = (0.8 * std::f64::consts::PI).cos() as f32;
+                let s1 = (0.4 * std::f64::consts::PI).sin() as f32;
+                let s2 = (0.8 * std::f64::consts::PI).sin() as f32;
+                for q in 0..m {
+                    let tw = &self.tw[4 * q..4 * q + 4];
+                    for k in 0..s {
+                        let a0 = x[k + s * q];
+                        let a1 = x[k + s * (q + m)];
+                        let a2 = x[k + s * (q + 2 * m)];
+                        let a3 = x[k + s * (q + 3 * m)];
+                        let a4 = x[k + s * (q + 4 * m)];
+                        let (p1, m1) = (a1.add(a4), sub(a1, a4));
+                        let (p2, m2) = (a2.add(a3), sub(a2, a3));
+                        let r1 = a0.add(scale(p1, c1)).add(scale(p2, c2));
+                        let r2 = a0.add(scale(p1, c2)).add(scale(p2, c1));
+                        let i1 = mul_neg_i(scale(m1, s1).add(scale(m2, s2)));
+                        let i2 = mul_neg_i(sub(scale(m1, s2), scale(m2, s1)));
+                        y[k + s * 5 * q] = a0.add(p1).add(p2);
+                        y[k + s * (5 * q + 1)] = r1.add(i1).mul(tw[0]);
+                        y[k + s * (5 * q + 2)] = r2.add(i2).mul(tw[1]);
+                        y[k + s * (5 * q + 3)] = sub(r2, i2).mul(tw[2]);
+                        y[k + s * (5 * q + 4)] = sub(r1, i1).mul(tw[3]);
+                    }
+                }
             }
         }
     }
 }
+
+/// The largest MDCT (coefficients): CELT's 20 ms frame. Working buffers of
+/// this size live on the stack.
+const MAX_MDCT: usize = 960;
 
 /// An MDCT with `n` coefficients (`2n` time samples).
 pub(crate) struct Mdct {
@@ -100,7 +226,7 @@ pub(crate) struct Mdct {
 
 impl Mdct {
     pub fn new(n: usize) -> Self {
-        assert!(n.is_multiple_of(4));
+        assert!(n.is_multiple_of(4) && n <= MAX_MDCT, "MDCT size {n}");
         let pre = (0..n / 2)
             .map(|i| {
                 let a = -std::f64::consts::PI * i as f64 / n as f64;
@@ -120,10 +246,13 @@ impl Mdct {
     pub fn dct4(&self, v: &[f32], out: &mut [f32]) {
         let n = self.n;
         let h = n / 2;
-        let z: Vec<Complex> =
-            (0..h).map(|i| Complex { re: v[2 * i], im: v[n - 1 - 2 * i] }.mul(self.pre[i])).collect();
-        let mut zf = vec![Complex::default(); h];
-        self.fft.process(&z, &mut zf);
+        let mut z = [Complex::default(); MAX_MDCT / 2];
+        let mut zf = [Complex::default(); MAX_MDCT / 2];
+        let (z, zf) = (&mut z[..h], &mut zf[..h]);
+        for (i, zi) in z.iter_mut().enumerate() {
+            *zi = Complex { re: v[2 * i], im: v[n - 1 - 2 * i] }.mul(self.pre[i]);
+        }
+        self.fft.process(z, zf);
         for k in 0..h {
             let y = zf[k].mul(self.post[k]);
             out[2 * k] = y.re;
@@ -135,20 +264,22 @@ impl Mdct {
     pub fn forward(&self, x: &[f32], out: &mut [f32]) {
         let n = self.n;
         let h = n / 2;
-        let mut v = vec![0.0f32; n];
+        let mut v = [0.0f32; MAX_MDCT];
+        let v = &mut v[..n];
         for i in 0..h {
             v[i] = -x[3 * h - 1 - i] - x[3 * h + i];
             v[h + i] = x[i] - x[n - 1 - i];
         }
-        self.dct4(&v, out);
+        self.dct4(v, out);
     }
 
     /// The inverse MDCT of `coefs[..n]` into `y[..2n]`.
     pub fn inverse(&self, coefs: &[f32], y: &mut [f32]) {
         let n = self.n;
         let h = n / 2;
-        let mut u = vec![0.0f32; n];
-        self.dct4(coefs, &mut u);
+        let mut u = [0.0f32; MAX_MDCT];
+        let u = &mut u[..n];
+        self.dct4(coefs, u);
         for j in 0..h {
             y[j] = u[j + h];
             y[h + j] = -u[n - 1 - j];

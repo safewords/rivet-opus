@@ -25,8 +25,10 @@ pub(crate) struct Synth {
 }
 
 impl Synth {
-    pub fn new() -> Self {
-        Self { mdcts: [Mdct::new(120), Mdct::new(240), Mdct::new(480), Mdct::new(960)] }
+    /// The shared transforms (their tables are built once per process).
+    pub fn new() -> &'static Self {
+        static SYNTH: std::sync::OnceLock<Synth> = std::sync::OnceLock::new();
+        SYNTH.get_or_init(|| Self { mdcts: [Mdct::new(120), Mdct::new(240), Mdct::new(480), Mdct::new(960)] })
     }
 
     fn mdct(&self, n: usize) -> &Mdct {

@@ -27,7 +27,7 @@ pub struct CeltEncoder {
     force_intra: bool,
     /// Energy of the last frame's sub-blocks, for transient detection.
     last_block_energy: f32,
-    synth: Synth,
+    synth: &'static Synth,
     prev_intensity: usize,
 }
 

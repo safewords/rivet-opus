@@ -628,18 +628,25 @@ impl<C: Coder> Ctx<'_, C> {
     fn pvq(&mut self, x: &mut [f32], k: usize, blocks: usize, gain: f32) -> u32 {
         let n = x.len();
         let ft = cwrs::v(n, k) as u32;
-        let mut yv = vec![0i32; n];
+        let mut yv_buf = [0i32; 176];
+        let mut yv_heap = Vec::new();
+        let yv: &mut [i32] = if n <= yv_buf.len() {
+            &mut yv_buf[..n]
+        } else {
+            yv_heap.resize(n, 0);
+            &mut yv_heap
+        };
         if C::ENCODE {
             exp_rotation(x, blocks, k, self.spread, true);
-            pvq_search(x, k, &mut yv);
-            self.ec.uint(cwrs::encode(&yv, k), ft);
+            pvq_search(x, k, yv);
+            self.ec.uint(cwrs::encode(yv, k), ft);
             return 0;
         }
         let idx = self.ec.uint(0, ft);
-        cwrs::decode(idx, n, k, &mut yv);
+        cwrs::decode(idx, n, k, yv);
         let ryy: i64 = yv.iter().map(|&v| i64::from(v) * i64::from(v)).sum();
         let g = gain / (ryy as f32).sqrt();
-        for (v, &q) in x.iter_mut().zip(&yv) {
+        for (v, &q) in x.iter_mut().zip(yv.iter()) {
             *v = g * q as f32;
         }
         exp_rotation(x, blocks, k, self.spread, false);

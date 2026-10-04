@@ -30,7 +30,8 @@
 //! # Ok::<(), opus::Error>(())
 //! ```
 
-#![forbid(unsafe_code)]
+// Unsafe code is confined to the vector kernels of `simd`.
+#![deny(unsafe_code)]
 #![warn(missing_docs)]
 // Signal processing indexes several arrays in step; the index loops read
 // closer to the RFC's formulas than iterator chains would.
@@ -47,6 +48,8 @@ pub mod packet;
 mod range;
 mod resample;
 mod silk;
+#[allow(unsafe_code)]
+mod simd;
 
 pub use decoder::{Decoder, SAMPLE_RATES};
 pub use encoder::{Application, Encoder, EncoderConfig, LOOKAHEAD_48K};

@@ -42,7 +42,7 @@ pub struct CeltDecoder {
     downsample: usize,
     /// RFC 8251 §10: ignore the decoded stereo phase inversion.
     pub disable_inv: bool,
-    synth: Synth,
+    synth: &'static Synth,
     old_band_e: BandEnergies,
     old_log_e: BandEnergies,
     old_log_e2: BandEnergies,

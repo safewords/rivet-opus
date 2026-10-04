@@ -48,6 +48,9 @@
 //! the codec builds is measured by the unit tests below and tabulated in
 //! `docs/VALIDATION.md`.
 
+use crate::simd;
+use std::sync::{Arc, Mutex, OnceLock};
+
 /// Transition half-width as a fraction of the lower rate.
 const TRANSITION: f64 = 0.05;
 /// Weight of the transition band (raised-cosine target).
@@ -68,11 +71,39 @@ pub(crate) struct Resampler {
     phases: usize,
     in_step: usize,
     /// Kernel taps per phase, starting at input offset `first[p]` relative
-    /// to the period's first input sample.
-    taps: Vec<Vec<f32>>,
-    first: Vec<isize>,
+    /// to the period's first input sample (shared by every resampler of the
+    /// same conversion).
+    kernel: Arc<Kernel>,
     /// Input history, oldest first.
     hist: Vec<f32>,
+}
+
+/// A converter's polyphase kernel: taps per phase and the input offset
+/// each phase starts at.
+struct Kernel {
+    taps: Vec<Vec<f32>>,
+    first: Vec<isize>,
+}
+
+/// The kernel of `in_rate → out_rate` with a `delay_ms` delay, designed on
+/// first use and then shared (the design solves a 150-tap least-squares
+/// problem: a decoder or encoder would otherwise pay for it on creation and
+/// at every SILK rate change).
+fn kernel(in_rate: usize, out_rate: usize, delay_ms: f64) -> Arc<Kernel> {
+    type Cache = Mutex<Vec<((usize, usize, u64), Arc<Kernel>)>>;
+    static CACHE: OnceLock<Cache> = OnceLock::new();
+    let key = (in_rate, out_rate, delay_ms.to_bits());
+    let cache = CACHE.get_or_init(Default::default);
+    if let Some((_, k)) = cache.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|(k, _)| *k == key) {
+        return k.clone();
+    }
+    let k = Arc::new(design_kernel(in_rate, out_rate, delay_ms));
+    let mut c = cache.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((_, k)) = c.iter().find(|(k, _)| *k == key) {
+        return k.clone();
+    }
+    c.push((key, k.clone()));
+    k
 }
 
 fn gcd(a: usize, b: usize) -> usize {
@@ -165,50 +196,57 @@ pub(crate) fn design(n: usize, wp: f64, ws: f64, wf: f64, tau: f64, gain: f64) -
     solve_spd(r, p, n)
 }
 
+/// Designs the kernel of a converter (see the module documentation).
+fn design_kernel(in_rate: usize, out_rate: usize, delay_ms: f64) -> Kernel {
+    let g = gcd(in_rate, out_rate);
+    if in_rate == out_rate {
+        // No filtering is needed, only the delay, rounded to whole
+        // samples as §4.2.9 allows ("it may not be possible to achieve
+        // exactly these delays while using a whole number of input or
+        // output samples"): a transparent delay line.
+        let d = (delay_ms * in_rate as f64 / 1000.0).round() as usize;
+        return Kernel { taps: vec![vec![1.0]], first: vec![-(d as isize)] };
+    }
+    let up = out_rate / g; // L
+    let down = in_rate / g; // M
+    let f = (in_rate * up) as f64; // F
+    let lo = in_rate.min(out_rate) as f64;
+    let delta = TRANSITION * lo;
+    let fc = 0.5 * lo;
+    let wp = 2.0 * std::f64::consts::PI * (fc - delta) / f;
+    let ws = 2.0 * std::f64::consts::PI * (fc + delta) / f;
+    let n = (LENGTH_FACTOR * f / (2.0 * delta)).ceil() as usize;
+    let tau = delay_ms * f / 1000.0;
+    let wf = 2.0 * std::f64::consts::PI * FAR_STOP * lo / f;
+    let h = design(n, wp, ws, wf, tau, up as f64);
+
+    // Phase p of a period (output time p·M on the F grid, the period
+    // starting at input 0) takes input j with h index p·M − j·L.
+    let mut taps = Vec::with_capacity(up);
+    let mut first = Vec::with_capacity(up);
+    for p in 0..up {
+        let t = (p * down) as isize;
+        let l = up as isize;
+        let j_max = t.div_euclid(l);
+        let j_min = (t - n as isize + 1 + l - 1).div_euclid(l);
+        let mut kern: Vec<f64> = (j_min..=j_max).map(|j| h[(t - j * l) as usize]).collect();
+        let dc: f64 = kern.iter().sum();
+        kern.iter_mut().for_each(|v| *v /= dc);
+        taps.push(kern.iter().map(|&v| v as f32).collect());
+        first.push(j_min);
+    }
+    Kernel { taps, first }
+}
+
 impl Resampler {
     /// A resampler from `in_rate` to `out_rate` whose passband delay is
     /// `delay_ms`. Equal rates make a delay line of the nearest whole
     /// number of samples.
     pub fn new(in_rate: usize, out_rate: usize, delay_ms: f64) -> Self {
+        let kernel = kernel(in_rate, out_rate, delay_ms);
         let g = gcd(in_rate, out_rate);
-        if in_rate == out_rate {
-            // No filtering is needed, only the delay, rounded to whole
-            // samples as §4.2.9 allows ("it may not be possible to achieve
-            // exactly these delays while using a whole number of input or
-            // output samples"): a transparent delay line.
-            let d = (delay_ms * in_rate as f64 / 1000.0).round() as usize;
-            return Self { in_rate, phases: 1, in_step: 1, taps: vec![vec![1.0]], first: vec![-(d as isize)], hist: vec![0.0; d + 1] };
-        }
-        let up = out_rate / g; // L
-        let down = in_rate / g; // M
-        let f = (in_rate * up) as f64; // F
-        let lo = in_rate.min(out_rate) as f64;
-        let delta = TRANSITION * lo;
-        let fc = 0.5 * lo;
-        let wp = 2.0 * std::f64::consts::PI * (fc - delta) / f;
-        let ws = 2.0 * std::f64::consts::PI * (fc + delta) / f;
-        let n = (LENGTH_FACTOR * f / (2.0 * delta)).ceil() as usize;
-        let tau = delay_ms * f / 1000.0;
-        let wf = 2.0 * std::f64::consts::PI * FAR_STOP * lo / f;
-        let h = design(n, wp, ws, wf, tau, up as f64);
-
-        // Phase p of a period (output time p·M on the F grid, the period
-        // starting at input 0) takes input j with h index p·M − j·L.
-        let mut taps = Vec::with_capacity(up);
-        let mut first = Vec::with_capacity(up);
-        for p in 0..up {
-            let t = (p * down) as isize;
-            let l = up as isize;
-            let j_max = t.div_euclid(l);
-            let j_min = (t - n as isize + 1 + l - 1).div_euclid(l);
-            let mut kern: Vec<f64> = (j_min..=j_max).map(|j| h[(t - j * l) as usize]).collect();
-            let dc: f64 = kern.iter().sum();
-            kern.iter_mut().for_each(|v| *v /= dc);
-            taps.push(kern.iter().map(|&v| v as f32).collect());
-            first.push(j_min);
-        }
-        let reach = first.iter().map(|&f| (-f).max(0) as usize).max().unwrap_or(0) + 1;
-        Self { in_rate, phases: up, in_step: down, taps, first, hist: vec![0.0; reach] }
+        let reach = kernel.first.iter().map(|&f| (-f).max(0) as usize).max().unwrap_or(0) + 1;
+        Self { in_rate, phases: out_rate / g, in_step: in_rate / g, kernel, hist: vec![0.0; reach] }
     }
 
     /// The input rate.
@@ -220,20 +258,21 @@ impl Resampler {
     /// output to `out`.
     pub fn process(&mut self, input: &[f32], out: &mut Vec<f32>) {
         let base = self.hist.len();
-        let mut buf = std::mem::take(&mut self.hist);
+        let buf = &mut self.hist;
         buf.extend_from_slice(input);
         let periods = input.len() / self.in_step;
         debug_assert_eq!(periods * self.in_step, input.len());
+        let k = &*self.kernel;
+        out.reserve(periods * self.phases);
         for per in 0..periods {
             let origin = base as isize + (per * self.in_step) as isize;
             for p in 0..self.phases {
-                let start = (origin + self.first[p]) as usize;
-                let acc: f32 = self.taps[p].iter().zip(&buf[start..]).map(|(h, x)| h * x).sum();
-                out.push(acc);
+                let start = (origin + k.first[p]) as usize;
+                out.push(simd::dot(&k.taps[p], &buf[start..]));
             }
         }
-        let keep = base;
-        self.hist = buf[buf.len() - keep..].to_vec();
+        // Keep the last `base` samples as the next call's history.
+        buf.drain(..input.len());
     }
 
     /// Clears the history (§4.2.9: "re-initialized with silence").
@@ -290,7 +329,7 @@ mod tests {
         let up = r.phases;
         let f_hi = (fin * up) as f64;
         let mut pairs = Vec::new();
-        for (p, (taps, &first)) in r.taps.iter().zip(&r.first).enumerate() {
+        for (p, (taps, &first)) in r.kernel.taps.iter().zip(&r.kernel.first).enumerate() {
             let t = (p * r.in_step) as isize;
             for (k, &v) in taps.iter().enumerate() {
                 pairs.push(((t - (first + k as isize) * up as isize) as usize, f64::from(v) / up as f64));
@@ -347,7 +386,7 @@ mod tests {
             }
             (near, far)
         });
-        Response { taps: len, taps_per_phase: r.taps.iter().map(Vec::len).max().unwrap(), ripple_db: ripple, delay_err_ms: delay_err, edge_db: gain_db(fc), stop_db: stop }
+        Response { taps: len, taps_per_phase: r.kernel.taps.iter().map(Vec::len).max().unwrap(), ripple_db: ripple, delay_err_ms: delay_err, edge_db: gain_db(fc), stop_db: stop }
     }
 
     /// Passband flat to ±0.8 dB, group delay within 0.04 ms of the target

@@ -5,6 +5,16 @@
 /// V(N, K) by the recurrence V(N,K) = V(N-1,K) + V(N,K-1) + V(N-1,K-1),
 /// V(N,0) = 1, V(0,K) = 0 for K != 0. Saturates at `u64::MAX`.
 pub fn v(n: usize, k: usize) -> u64 {
+    if let Some(t) = Shared::covers(n, k) {
+        let x = t.get(n, k);
+        if x != SATURATED {
+            return u64::from(x);
+        }
+    }
+    v_direct(n, k)
+}
+
+fn v_direct(n: usize, k: usize) -> u64 {
     let mut row = vec![0u64; k + 1];
     row[0] = 1; // n = 0
     for _ in 0..n {
@@ -18,6 +28,44 @@ pub fn v(n: usize, k: usize) -> u64 {
         }
     }
     row[k]
+}
+
+/// The largest band (N) and pulse count (K) CELT codes: band 20's 22 bins
+/// at LM 3 (8 × 22), and `get_pulses(MAX_PSEUDO)`. Larger codebooks fall
+/// back to a table of their own.
+const TABLE_N: usize = 176;
+const TABLE_K: usize = 240;
+
+/// `u32::MAX` marks a V(N, K) of 2^32 or more. No codebook has exactly
+/// 2^32 - 1 entries: V(N, K) is even for K > 0 (each codeword's sign
+/// flipped is another) and 1 for K = 0.
+const SATURATED: u32 = u32::MAX;
+
+/// V(N, K) for every `N <= TABLE_N`, `K <= TABLE_K`, built once. Codebooks
+/// the range coder can carry have fewer than 2^32 entries, and every value
+/// [`decode`] and [`encode`] read for them is at most V(N, K), so 32 bits
+/// hold them exactly.
+struct Shared {
+    v: Vec<u32>,
+}
+
+impl Shared {
+    const W: usize = TABLE_K + 1;
+
+    fn covers(n: usize, k: usize) -> Option<&'static Self> {
+        static T: std::sync::OnceLock<Shared> = std::sync::OnceLock::new();
+        (n <= TABLE_N && k <= TABLE_K).then(|| {
+            T.get_or_init(|| {
+                let t = table(TABLE_N, TABLE_K);
+                Shared { v: t.iter().map(|&x| u32::try_from(x).unwrap_or(SATURATED)).collect() }
+            })
+        })
+    }
+
+    #[inline(always)]
+    fn get(&self, n: usize, k: usize) -> u32 {
+        self.v[n * Self::W + k]
+    }
 }
 
 /// The table `V[n][k]` for `n <= N`, `k <= K`, flattened by rows of `K + 1`.
@@ -34,12 +82,23 @@ fn table(n: usize, k: usize) -> Vec<u64> {
     t
 }
 
+/// The shared table if it holds V(n, k) exactly.
+fn shared_exact(n: usize, k: usize) -> Option<&'static Shared> {
+    Shared::covers(n, k).filter(|t| t.get(n, k) != SATURATED)
+}
+
 /// The vector with index `i` among the V(N, K) codewords (§4.3.4.2), into
 /// `y[..n]`.
 pub fn decode(i: u32, n: usize, k: usize, y: &mut [i32]) {
+    if let Some(t) = shared_exact(n, k) {
+        return decode_with(|nn, kk| u64::from(t.get(nn, kk)), i, n, k, y);
+    }
     let t = table(n, k);
-    let w = k + 1;
-    let vv = |nn: usize, kk: usize| t[nn * w + kk];
+    decode_with(|nn, kk| t[nn * (k + 1) + kk], i, n, k, y);
+}
+
+#[inline(always)]
+fn decode_with(vv: impl Fn(usize, usize) -> u64, i: u32, n: usize, k: usize, y: &mut [i32]) {
     let mut i = u64::from(i);
     let mut k = k;
     for j in 0..n {
@@ -64,10 +123,16 @@ pub fn decode(i: u32, n: usize, k: usize, y: &mut [i32]) {
 /// The index of `y` (whose absolute values sum to K) — the inverse of
 /// [`decode`].
 pub fn encode(y: &[i32], k: usize) -> u32 {
+    if let Some(t) = shared_exact(y.len(), k) {
+        return encode_with(|nn, kk| u64::from(t.get(nn, kk)), y, k);
+    }
+    let t = table(y.len(), k);
+    encode_with(|nn, kk| t[nn * (k + 1) + kk], y, k)
+}
+
+#[inline(always)]
+fn encode_with(vv: impl Fn(usize, usize) -> u64, y: &[i32], k: usize) -> u32 {
     let n = y.len();
-    let t = table(n, k);
-    let w = k + 1;
-    let vv = |nn: usize, kk: usize| t[nn * w + kk];
     let mut i = 0u64;
     let mut k = k;
     for (j, &yj) in y.iter().enumerate() {
@@ -117,6 +182,25 @@ mod tests {
     /// Every codeword of small codebooks is enumerated exactly once:
     /// decoding each index gives a distinct vector of L1 norm K, and encoding
     /// it gives the index back.
+    /// The shared table agrees with the recurrence wherever it is exact,
+    /// and marks exactly the codebooks of 2^32 entries or more.
+    #[test]
+    fn shared_table_matches_recurrence() {
+        let t = Shared::covers(TABLE_N, TABLE_K).unwrap();
+        let full = table(TABLE_N, TABLE_K);
+        for n in 0..=TABLE_N {
+            for kk in 0..=TABLE_K {
+                let x = full[n * (TABLE_K + 1) + kk];
+                assert_eq!(t.get(n, kk) == SATURATED, x >= 1 << 32, "V({n},{kk})");
+                assert_eq!(v(n, kk), x, "V({n},{kk})");
+                if x < 1 << 32 {
+                    assert_eq!(u64::from(t.get(n, kk)), x);
+                }
+            }
+        }
+        assert_eq!(v(300, 2), v_direct(300, 2));
+    }
+
     #[test]
     fn enumeration_is_a_bijection() {
         for n in 1..=6 {

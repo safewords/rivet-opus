@@ -22,6 +22,9 @@ thiserror = "2"
 
 [features]
 default = []
+# Compiles out the AVX2 / NEON kernels (their portable versions give
+# bit-identical results); CI tests this path too.
+force-scalar = []
 
 [profile.test]
 opt-level = 3
