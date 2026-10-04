@@ -41,7 +41,9 @@ impl Synth {
     }
 
     /// The window over a block of `nb` coefficients (2·nb samples): zero,
-    /// rising over the overlap, one, falling, zero.
+    /// rising over the overlap, one, falling, zero. (The transforms apply it
+    /// region by region; the tests check them against this.)
+    #[cfg(test)]
     fn window_at(nb: usize, t: usize) -> f32 {
         let w = &mode::mode().window;
         let rise = nb / 2 - OVERLAP / 2;
@@ -73,8 +75,17 @@ impl Synth {
                 *c = freq[b + k * blocks];
             }
             mdct.inverse(&coefs, &mut y);
-            for t in rise..rise + nb + OVERLAP {
-                out[b * nb + t - rise] += SYNTH_SCALE * y[t] * Self::window_at(nb, t);
+            // `window_at` region by region: rising, flat, falling.
+            let w = &mode::mode().window;
+            let (o, y) = (&mut out[b * nb..b * nb + nb + OVERLAP], &y[rise..rise + nb + OVERLAP]);
+            for i in 0..OVERLAP {
+                o[i] += SYNTH_SCALE * y[i] * w[i];
+            }
+            for i in OVERLAP..nb {
+                o[i] += SYNTH_SCALE * y[i];
+            }
+            for i in nb..nb + OVERLAP {
+                o[i] += SYNTH_SCALE * y[i] * w[OVERLAP - 1 - (i - nb)];
             }
         }
     }
@@ -92,8 +103,15 @@ impl Synth {
         let mut coefs = vec![0.0f32; nb];
         for b in 0..blocks {
             buf.fill(0.0);
-            for t in rise..rise + nb + OVERLAP {
-                buf[t] = x[b * nb + t - rise] * Self::window_at(nb, t);
+            // `window_at` region by region: rising, flat, falling.
+            let w = &mode::mode().window;
+            let (d, x) = (&mut buf[rise..rise + nb + OVERLAP], &x[b * nb..b * nb + nb + OVERLAP]);
+            for i in 0..OVERLAP {
+                d[i] = x[i] * w[i];
+            }
+            d[OVERLAP..nb].copy_from_slice(&x[OVERLAP..nb]);
+            for i in nb..nb + OVERLAP {
+                d[i] = x[i] * w[OVERLAP - 1 - (i - nb)];
             }
             mdct.forward(&buf, &mut coefs);
             for (k, c) in coefs.iter().enumerate() {
@@ -112,6 +130,40 @@ impl Synth {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The windowing of the transforms, region by region, is `window_at`'s.
+    #[test]
+    fn windowing_matches_window_at() {
+        let s = Synth::new();
+        for nb in [120usize, 240, 480, 960] {
+            let rise = nb / 2 - OVERLAP / 2;
+            // One block of ones through the forward windowing: the windowed
+            // buffer is visible through `mdct_blocks`' linearity, so compare
+            // against windowing by `window_at` then the same transform.
+            let x: Vec<f32> = (0..nb + OVERLAP).map(|i| 1.0 + (i % 7) as f32 / 8.0).collect();
+            let got = s.mdct_blocks(&x, nb, 1);
+            let mut buf = vec![0.0f32; 2 * nb];
+            for t in rise..rise + nb + OVERLAP {
+                buf[t] = x[t - rise] * Synth::window_at(nb, t);
+            }
+            let mut want = vec![0.0f32; nb];
+            s.mdct(nb).forward(&buf, &mut want);
+            let scale = 2.0 / nb as f32 / SYNTH_SCALE;
+            for k in 0..nb {
+                assert_eq!(got[k].to_bits(), (want[k] * scale).to_bits(), "nb {nb} k {k}");
+            }
+            // Synthesis: overlap-add of one block onto zeros.
+            let coefs: Vec<f32> = (0..nb).map(|k| ((k * 31) % 17) as f32 - 8.0).collect();
+            let mut out = vec![0.0f32; nb + OVERLAP];
+            s.imdct_ola(&coefs, &mut out, nb, 1);
+            let mut y = vec![0.0f32; 2 * nb];
+            s.mdct(nb).inverse(&coefs, &mut y);
+            for t in rise..rise + nb + OVERLAP {
+                let want = 0.0 + SYNTH_SCALE * y[t] * Synth::window_at(nb, t);
+                assert_eq!(out[t - rise].to_bits(), want.to_bits(), "nb {nb} t {t}");
+            }
+        }
+    }
 
     /// Analysis then synthesis with overlap-add gives the input back.
     #[test]

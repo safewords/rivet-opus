@@ -258,13 +258,12 @@ fn lpc_analysis(x: &[f32], d: usize) -> Vec<f64> {
 const NLSF_GRID: usize = 2048;
 
 /// `cos(w_j (half - k))` and `sin(w_j (half - k))` at every grid point
-/// `w_j = pi j / NLSF_GRID` (`j = 1..NLSF_GRID`) for `k = 0..=half`, where
+/// `w_j = pi j / NLSF_GRID` (`j = 0..NLSF_GRID`) for `k = 0..=half`, where
 /// `half = (d + 1) / 2`: the same products and the same calls as the direct
 /// evaluation, made once per order instead of on every frame. The terms
 /// for `k > half` are their mirror images (`half - k` changes sign
-/// exactly), which cosine keeps and sine negates.
+/// exactly), which cosine keeps and sine negates. Stored by `k`, then `j`.
 struct NlsfGrid {
-    terms: usize,
     cos: Vec<f64>,
     sin: Vec<f64>,
 }
@@ -273,17 +272,17 @@ impl NlsfGrid {
     fn build(d: usize) -> Self {
         let half = (d + 1) as f64 / 2.0;
         let terms = d / 2 + 1;
-        let mut cos = Vec::with_capacity(NLSF_GRID * terms);
-        let mut sin = Vec::with_capacity(NLSF_GRID * terms);
+        let mut cos = vec![0.0; NLSF_GRID * terms];
+        let mut sin = vec![0.0; NLSF_GRID * terms];
         for j in 0..NLSF_GRID {
             let w = std::f64::consts::PI * j as f64 / NLSF_GRID as f64;
             for k in 0..terms {
                 let x = w * (half - k as f64);
-                cos.push(x.cos());
-                sin.push(x.sin());
+                cos[k * NLSF_GRID + j] = x.cos();
+                sin[k * NLSF_GRID + j] = x.sin();
             }
         }
-        Self { terms, cos, sin }
+        Self { cos, sin }
     }
 
     fn get(d: usize) -> &'static Self {
@@ -293,6 +292,31 @@ impl NlsfGrid {
             10 => G10.get_or_init(|| Self::build(10)),
             16 => G16.get_or_init(|| Self::build(16)),
             _ => unreachable!("SILK LPC order {d}"),
+        }
+    }
+
+    /// `out[j] = Σ_k c[k] · table(k)[j]` for every grid point, each sum
+    /// taken in order of `k` (as the direct evaluation sums), where
+    /// `table(k)` is row `k` of `rows` up to the middle and the mirrored row
+    /// beyond it, negated if `odd`. The sweep runs across the grid, so it
+    /// vectorises without changing any sum's order.
+    fn sweep(rows: &[f64], c: &[f64], odd: bool, out: &mut [f64; NLSF_GRID]) {
+        let d = c.len() - 2;
+        let terms = d / 2 + 1;
+        // `Iterator::sum` of floats starts from -0.0.
+        out.fill(-0.0);
+        for (k, &ck) in c.iter().enumerate() {
+            let (row, neg) = if k < terms { (k, false) } else { (d + 1 - k, odd) };
+            let row = &rows[row * NLSF_GRID..(row + 1) * NLSF_GRID];
+            if neg {
+                for (o, &t) in out.iter_mut().zip(row) {
+                    *o += ck * -t;
+                }
+            } else {
+                for (o, &t) in out.iter_mut().zip(row) {
+                    *o += ck * t;
+                }
+            }
         }
     }
 }
@@ -312,25 +336,18 @@ fn lpc_to_nlsf(a: &[f64]) -> Option<Vec<i32>> {
     let fp = |w: f64| -> f64 { p.iter().enumerate().map(|(k, v)| v * (w * (half - k as f64)).cos()).sum() };
     let fq = |w: f64| -> f64 { q.iter().enumerate().map(|(k, v)| v * (w * (half - k as f64)).sin()).sum() };
     let grid = NlsfGrid::get(d);
-    let t = grid.terms;
-    // Grid values from the table, summed in the same order as `fp` / `fq`.
-    let gp = |j: usize| -> f64 {
-        let row = &grid.cos[j * t..(j + 1) * t];
-        p.iter().enumerate().map(|(k, v)| v * row[if k < t { k } else { d + 1 - k }]).sum()
-    };
-    let gq = |j: usize| -> f64 {
-        let row = &grid.sin[j * t..(j + 1) * t];
-        q.iter().enumerate().map(|(k, v)| v * if k < t { row[k] } else { -row[d + 1 - k] }).sum()
-    };
+    // P and Q on the whole grid, from the table.
+    let mut vp = [0.0f64; NLSF_GRID];
+    let mut vq = [0.0f64; NLSF_GRID];
+    NlsfGrid::sweep(&grid.cos, &p, false, &mut vp);
+    NlsfGrid::sweep(&grid.sin, &q, true, &mut vq);
     let mut roots: Vec<(f64, bool)> = Vec::with_capacity(d);
-    for (is_p, f, g) in
-        [(true, &fp as &dyn Fn(f64) -> f64, &gp as &dyn Fn(usize) -> f64), (false, &fq as &dyn Fn(f64) -> f64, &gq as &dyn Fn(usize) -> f64)]
-    {
+    for (is_p, f, g) in [(true, &fp as &dyn Fn(f64) -> f64, &vp), (false, &fq as &dyn Fn(f64) -> f64, &vq)] {
         let mut prev_w = 1e-6;
         let mut prev_v = f(prev_w);
         for j in 1..NLSF_GRID {
             let w = std::f64::consts::PI * j as f64 / NLSF_GRID as f64;
-            let v = g(j);
+            let v = g[j];
             if prev_v == 0.0 || prev_v.signum() != v.signum() {
                 let (mut lo, mut hi, mut flo) = (prev_w, w, prev_v);
                 for _ in 0..30 {
@@ -500,6 +517,41 @@ fn ncorr(r: &[f32], start: usize, len: usize, lag: usize) -> f64 {
     if xx <= 1e-12 || yy <= 1e-12 { 0.0 } else { xy / (xx * yy).sqrt() }
 }
 
+/// [`ncorr`] at lags `lag0 .. lag0 + out.len()` into `out`, bit-identical
+/// to calling it per lag: `xx` does not depend on the lag, and the other
+/// two sums are kept per lag, each in the order `ncorr` takes it, while
+/// the work runs across lags (which vectorises).
+fn ncorr_lags(r: &[f32], start: usize, len: usize, lag0: usize, out: &mut [f64]) {
+    const B: usize = 4;
+    let mut xx = 0.0f64;
+    for &v in &r[start..start + len] {
+        xx += f64::from(v) * f64::from(v);
+    }
+    let finish = |xy: f64, yy: f64| if xx <= 1e-12 || yy <= 1e-12 { 0.0 } else { xy / (xx * yy).sqrt() };
+    let mut chunks = out.chunks_exact_mut(B);
+    let mut lag = lag0;
+    for o in &mut chunks {
+        let (mut xy, mut yy) = ([0.0f64; B], [0.0f64; B]);
+        // y[j] = r[n - lag - j]: the window ending at `n - lag`, reversed.
+        for n in start..start + len {
+            let x = f64::from(r[n]);
+            let w = &r[n - lag - (B - 1)..=n - lag];
+            for j in 0..B {
+                let y = f64::from(w[B - 1 - j]);
+                xy[j] += x * y;
+                yy[j] += y * y;
+            }
+        }
+        for j in 0..B {
+            o[j] = finish(xy[j], yy[j]);
+        }
+        lag += B;
+    }
+    for (j, o) in chunks.into_remainder().iter_mut().enumerate() {
+        *o = ncorr(r, start, len, lag + j);
+    }
+}
+
 /// One channel of the SILK encoder.
 #[derive(Clone)]
 struct ChannelEncoder {
@@ -559,12 +611,14 @@ impl ChannelEncoder {
         let (_, min_lag, max_lag, _) = pitch_params(fs);
         let start = HIST;
         let mut best = (0.0f64, min_lag);
+        let mut corr = vec![0.0f64; (max_lag - min_lag) as usize];
+        ncorr_lags(&res, start, n, min_lag as usize, &mut corr);
         // The primary lag is coded as lag_min plus 32 steps of lag_scale
         // plus the low part (RFC 6716 §4.2.7.6.1), so it reaches
         // lag_max - 1; only the per-subframe lags (primary plus contour
         // offset, clamped) may reach lag_max.
         for lag in min_lag..max_lag {
-            let c = ncorr(&res, start, n, lag as usize);
+            let c = corr[(lag - min_lag) as usize];
             // A slight preference for short lags avoids pitch multiples.
             let score = c * (1.0 - 0.15 * (f64::from(lag) / f64::from(min_lag)).log2() / 4.0);
             if score > best.0 {
@@ -581,6 +635,15 @@ impl ChannelEncoder {
         if voiced {
             // Refine: primary lag near the best one and a contour.
             let cb_count = contour_icdf(fs, nb_subfr).len();
+            // Each (subframe, lag) correlation once: the contours share most.
+            let mut memo = vec![f64::NAN; nb_subfr * (max_lag as usize + 1)];
+            let mut sub_corr = |k: usize, l: usize| {
+                let m = &mut memo[k * (max_lag as usize + 1) + l];
+                if m.is_nan() {
+                    *m = ncorr(&res, start + k * sub, sub, l);
+                }
+                *m
+            };
             let mut bestc = (f64::MIN, lag, 0usize);
             for p in (lag - 2).max(min_lag)..=(lag + 2).min(max_lag - 1) {
                 for ci in 0..cb_count {
@@ -588,7 +651,7 @@ impl ChannelEncoder {
                     let mut s = 0.0;
                     for k in 0..nb_subfr {
                         let l = (p + off[k]).clamp(min_lag, max_lag) as usize;
-                        s += ncorr(&res, start + k * sub, sub, l);
+                        s += sub_corr(k, l);
                     }
                     if s > bestc.0 {
                         bestc = (s, p, ci);
@@ -1335,6 +1398,25 @@ mod tests {
         Some(roots.iter().map(|r| ((r.0 / std::f64::consts::PI) * 32768.0).round().clamp(1.0, 32767.0) as i32).collect())
     }
 
+
+    /// The correlations across lags equal `ncorr` lag by lag, bit for bit.
+    #[test]
+    fn ncorr_lags_matches_ncorr() {
+        let mut s = 99u32;
+        let r: Vec<f32> = (0..1000)
+            .map(|_| {
+                s = s.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                (s >> 8) as f32 / (1u32 << 24) as f32 - 0.5
+            })
+            .collect();
+        for (start, len, lag0, count) in [(640, 320, 32, 256), (640, 80, 16, 7), (400, 1, 3, 9), (300, 0, 5, 5)] {
+            let mut out = vec![0.0; count];
+            ncorr_lags(&r, start, len, lag0, &mut out);
+            for (j, &o) in out.iter().enumerate() {
+                assert_eq!(o.to_bits(), ncorr(&r, start, len, lag0 + j).to_bits(), "{start} {len} lag {}", lag0 + j);
+            }
+        }
+    }
 
     /// The tabled grid finds bit-identical NLSFs to the direct evaluation.
     #[test]
